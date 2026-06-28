@@ -1,3 +1,3 @@
 fn main() {
-    dynamic_qr_system_lib::run()
+    busypay_qr_lib::run()
 }

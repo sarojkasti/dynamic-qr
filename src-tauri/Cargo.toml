@@ -1,12 +1,12 @@
 [package]
-name = "dynamic_qr_system"
+name = "busypay_qr"
 version = "1.0.0"
 description = "Dynamic QR payment integration for Busy accounting software via Fonepay"
 authors = ["Innovus LLC"]
 edition = "2021"
 
 [lib]
-name = "dynamic_qr_system_lib"
+name = "busypay_qr_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

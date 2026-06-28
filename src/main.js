@@ -26,11 +26,11 @@ import {
 } from "./api";
 import "./styles.css";
 
-const BANKS_STORAGE_KEY = "dynamic-qr-system.banks.v1";
-const QR_PAYLOADS_STORAGE_KEY = "dynamic-qr-system.qr-payloads.v1";
-const QR_GENERATION_LOCK_STORAGE_KEY = "dynamic-qr-system.qr-generation-locks.v1";
-const PAYMENT_UPDATE_STORAGE_KEY = "dynamic-qr-system.payment-update.v1";
-const NOTIFICATIONS_ENABLED_STORAGE_KEY = "dynamic-qr-system.notifications-enabled.v1";
+const BANKS_STORAGE_KEY = "busypay-qr.banks.v1";
+const QR_PAYLOADS_STORAGE_KEY = "busypay-qr.qr-payloads.v1";
+const QR_GENERATION_LOCK_STORAGE_KEY = "busypay-qr.qr-generation-locks.v1";
+const PAYMENT_UPDATE_STORAGE_KEY = "busypay-qr.payment-update.v1";
+const NOTIFICATIONS_ENABLED_STORAGE_KEY = "busypay-qr.notifications-enabled.v1";
 const qrBaseUrl = "https://qr.yourdomain.com/invoice";
 const params = new URLSearchParams(window.location.search);
 const isPopupWindow = params.get("popup") === "1";
@@ -611,7 +611,7 @@ function render() {
         <div class="brand">
           <span class="brand-mark">QR</span>
           <div>
-            <h1>Dynamic QR System</h1>
+            <h1>BusyPay QR</h1>
             <p>Busy ODBC desktop</p>
           </div>
         </div>

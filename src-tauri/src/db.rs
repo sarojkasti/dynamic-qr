@@ -742,7 +742,7 @@ fn write_settings_file(settings: &BusySettings, path: &PathBuf) -> Result<(), St
 fn settings_file_path() -> Result<PathBuf, String> {
     if let Ok(appdata) = env::var("APPDATA") {
         return Ok(PathBuf::from(appdata)
-            .join("Dynamic QR System")
+            .join("BusyPay QR")
             .join("busy-settings.json"));
     }
 
@@ -834,7 +834,7 @@ pub fn write_fonepay_settings(
 fn fonepay_settings_file_path() -> Result<PathBuf, String> {
     if let Ok(appdata) = env::var("APPDATA") {
         return Ok(PathBuf::from(appdata)
-            .join("Dynamic QR System")
+            .join("BusyPay QR")
             .join("fonepay-settings.json"));
     }
 
