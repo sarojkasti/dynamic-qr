@@ -98,6 +98,8 @@ impl BusySettings {
                 .unwrap_or_else(|_| "VchOtherInfo".to_string()),
             payment_status_column: env::var("BUSY_PAYMENT_STATUS_COLUMN")
                 .unwrap_or_else(|_| "OF3".to_string()),
+            payment_transaction_id_column: env::var("BUSY_PAYMENT_TRANSACTION_ID_COLUMN")
+                .unwrap_or_else(|_| "OF1".to_string()),
             settlement_table: None,
             settlement_vch_code_column: None,
             settlement_mode_column: None,
@@ -244,17 +246,20 @@ impl BusyDb {
         let table = checked_identifier(&settings.invoice_table)?;
         let status_table = checked_identifier(&settings.payment_status_table)?;
         let status_column = checked_column_identifier(&settings.payment_status_column)?;
+        let txn_id_column = checked_column_identifier(&settings.payment_transaction_id_column)?;
         let transaction_id = transaction_id
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
 
-        if transaction_id.is_some() && status_column.eq_ignore_ascii_case("OF1") {
-            return Err("OF1 is reserved for the Fonepay transaction id. Choose a different payment status column.".to_string());
+        if transaction_id.is_some() && status_column.eq_ignore_ascii_case(&txn_id_column) {
+            return Err(format!(
+                "{txn_id_column} is used for the Fonepay transaction id. Choose a different payment status column."
+            ));
         }
 
         self.ensure_text_status_column(&status_table, &status_column)?;
         if transaction_id.is_some() {
-            self.ensure_text_status_column(&status_table, "OF1")?;
+            self.ensure_text_status_column(&status_table, &txn_id_column)?;
         }
 
         let vch_code = self
@@ -266,9 +271,9 @@ impl BusyDb {
         if let Some(transaction_id) = transaction_id {
             let sql = format!(
                 "IF EXISTS (SELECT 1 FROM {status_table} WHERE VchCode = ?) \
-                    UPDATE {status_table} SET [{status_column}] = ?, [OF1] = ? WHERE VchCode = ? \
+                    UPDATE {status_table} SET [{status_column}] = ?, [{txn_id_column}] = ? WHERE VchCode = ? \
                  ELSE \
-                    INSERT INTO {status_table} (VchCode, [{status_column}], [OF1]) VALUES (?, ?, ?)"
+                    INSERT INTO {status_table} (VchCode, [{status_column}], [{txn_id_column}]) VALUES (?, ?, ?)"
             );
 
             let exists_vch_code_param = vch_code.into_parameter();
@@ -682,6 +687,10 @@ fn validate_settings(settings: &BusySettings) -> Result<(), String> {
     checked_identifier(&settings.invoice_table)?;
     checked_identifier(&settings.payment_status_table)?;
     checked_column_identifier(&settings.payment_status_column)?;
+    checked_column_identifier(&settings.payment_transaction_id_column)?;
+    if settings.payment_status_column.eq_ignore_ascii_case(&settings.payment_transaction_id_column) {
+        return Err("Payment status column and transaction ID column must be different.".to_string());
+    }
     invoice_amount_sql();
 
     if settings.sales_voucher_type <= 0 {

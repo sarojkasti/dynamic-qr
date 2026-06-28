@@ -209,13 +209,6 @@ async fn generate_fonepay_third_party_dynamic_qr(
         "password": password,
     });
 
-    println!(
-        "Fonepay Dynamic QR request endpoint={endpoint}, payload={}",
-        redacted_fonepay_payload(&payload)
-    );
-    println!("Fonepay Dynamic QR HMAC message={data_to_hash}");
-    println!("Fonepay Dynamic QR dataValidation={data_validation}");
-
     let response = reqwest::Client::new()
         .post(endpoint)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -231,11 +224,6 @@ async fn generate_fonepay_third_party_dynamic_qr(
         .and_then(|value| value.to_str().ok())
         .unwrap_or("")
         .to_string();
-
-    println!(
-        "Fonepay third-party Dynamic QR response status={}, content_type={}",
-        status, content_type
-    );
 
     if content_type.starts_with("image/") {
         let bytes = response
@@ -266,11 +254,8 @@ async fn generate_fonepay_third_party_dynamic_qr(
         .await
         .map_err(|error| ApiError::from(format!("Failed to read Fonepay response: {error}")))?;
 
-    println!("Fonepay third-party Dynamic QR response body: {body}");
-
     if !status.is_success() {
-        println!("Fonepay third-party Dynamic QR error body: {body}");
-        return Err(ApiError::from(format!("Fonepay returned {status}: {body}")));
+        return Err(ApiError::from(format!("Fonepay returned {status}")));
     }
 
     let raw = serde_json::from_str::<serde_json::Value>(&body)
@@ -281,10 +266,6 @@ async fn generate_fonepay_third_party_dynamic_qr(
     }
 
     let qr_text = find_qr_text(&raw);
-    println!(
-        "Fonepay third-party Dynamic QR raw response: {}\nExtracted qr_text: {:?}",
-        raw, qr_text
-    );
 
     if qr_text.is_none() {
         return Err(ApiError::from(
@@ -416,17 +397,11 @@ async fn generate_fonepay_pos_dynamic_qr(
         .unwrap_or("")
         .to_string();
 
-    println!(
-        "Fonepay POS QR response status={}, content_type={}",
-        status, content_type
-    );
-
     if content_type.starts_with("image/") {
         let bytes = response
             .bytes()
             .await
             .map_err(|error| ApiError::from(format!("Failed to read Fonepay image: {error}")))?;
-        println!("Fonepay returned image QR: {} bytes", bytes.len());
 
         if !status.is_success() {
             return Err(ApiError::from(format!(
@@ -452,8 +427,7 @@ async fn generate_fonepay_pos_dynamic_qr(
         .map_err(|error| ApiError::from(format!("Failed to read Fonepay response: {error}")))?;
 
     if !status.is_success() {
-        println!("Fonepay POS QR error body: {body}");
-        return Err(ApiError::from(format!("Fonepay returned {status}: {body}")));
+        return Err(ApiError::from(format!("Fonepay returned {status}")));
     }
 
     let raw = serde_json::from_str::<serde_json::Value>(&body)
@@ -471,10 +445,6 @@ async fn generate_fonepay_pos_dynamic_qr(
     }
 
     let qr_text = find_qr_text(&raw);
-    println!(
-        "Fonepay POS QR raw response: {}\nExtracted qr_text: {:?}",
-        raw, qr_text
-    );
     if qr_text.is_none() {
         return Err(ApiError::from(
             "Fonepay response did not include a QR string",
@@ -1032,21 +1002,6 @@ fn fonepay_response_message(value: &serde_json::Value) -> String {
         .and_then(|item| item.as_str())
         .map(str::to_string)
         .unwrap_or_else(|| format!("Fonepay request failed: {value}"))
-}
-
-fn redacted_fonepay_payload(payload: &serde_json::Value) -> serde_json::Value {
-    let mut redacted = payload.clone();
-
-    if let Some(map) = redacted.as_object_mut() {
-        if map.contains_key("password") {
-            map.insert(
-                "password".to_string(),
-                serde_json::Value::String("***".to_string()),
-            );
-        }
-    }
-
-    redacted
 }
 
 fn looks_like_emv_qr(value: &str) -> bool {

@@ -1,8 +1,8 @@
 [package]
 name = "dynamic_qr_system"
-version = "0.1.0"
-description = "A Tauri desktop application for managing dynamic QR codes"
-authors = ["Dynamic QR System"]
+version = "1.0.0"
+description = "Dynamic QR payment integration for Busy accounting software via Fonepay"
+authors = ["Innovus LLC"]
 edition = "2021"
 
 [lib]

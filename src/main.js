@@ -44,7 +44,8 @@ const state = {
     invoiceTable: "Tran1",
     salesVoucherType: 9,
     paymentStatusTable: "VchOtherInfo",
-    paymentStatusColumn: "OF2"
+    paymentStatusColumn: "OF2",
+    paymentTransactionIdColumn: "OF1"
   },
   busySettingsConfigured: false,
   busySettingsStoragePath: "",
@@ -364,7 +365,8 @@ async function handleBusySettingsSubmit(form) {
     invoiceTable: form.invoiceTable.value.trim(),
     salesVoucherType: Number.parseInt(form.salesVoucherType.value, 10),
     paymentStatusTable: form.paymentStatusTable.value.trim(),
-    paymentStatusColumn: form.paymentStatusColumn.value.trim()
+    paymentStatusColumn: form.paymentStatusColumn.value.trim(),
+    paymentTransactionIdColumn: form.paymentTransactionIdColumn.value.trim()
   };
 
   state.notificationsEnabled = Boolean(form.notificationsEnabled?.checked);
@@ -662,7 +664,6 @@ function render() {
         <section class="content-grid">
           ${invoice ? renderQrStage(invoice) : renderEmptyState()}
           ${renderInvoiceDetails(invoice)}
-          ${renderBankPanel()}
         </section>
       </section>
       ${renderBusySettingsModal()}
@@ -954,6 +955,10 @@ function renderBusySettingsModal() {
           <input name="paymentStatusColumn" value="${escapeHtml(settings.paymentStatusColumn)}" required />
         </label>
         <label>
+          Transaction ID column
+          <input name="paymentTransactionIdColumn" value="${escapeHtml(settings.paymentTransactionIdColumn)}" required />
+        </label>
+        <label>
           <input name="notificationsEnabled" type="checkbox" ${state.notificationsEnabled ? "checked" : ""} />
           Enable payment notifications
         </label>
@@ -966,6 +971,10 @@ function renderBusySettingsModal() {
         ${state.busySettingsConfigured ? `<button id="closeBusySettings" class="secondary-button" type="button">Cancel</button>` : ""}
       </form>
       ${state.busySettingsStoragePath ? `<p class="settings-path">Saved at ${escapeHtml(state.busySettingsStoragePath)}</p>` : ""}
+
+      <hr />
+
+      ${renderBankPanel()}
       </section>
     </div>
   `;

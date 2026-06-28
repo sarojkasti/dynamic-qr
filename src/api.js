@@ -45,7 +45,8 @@ export async function getBusySettings() {
         invoiceTable: "Tran1",
         salesVoucherType: 9,
         paymentStatusTable: "VchOtherInfo",
-        paymentStatusColumn: "OF2"
+        paymentStatusColumn: "OF2",
+        paymentTransactionIdColumn: "OF1"
       },
       isConfigured: false,
       storagePath: "browser preview"
