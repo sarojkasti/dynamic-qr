@@ -1,0 +1,11 @@
+C:\Users\SAROJ KASTI\Desktop\Dynamic qr system\src-tauri\target-installer\release\deps\phf-7b74ecef482a3e43.d: C:\Users\SAROJ\ KASTI\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\phf-0.13.1\src\lib.rs C:\Users\SAROJ\ KASTI\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\phf-0.13.1\src\map.rs C:\Users\SAROJ\ KASTI\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\phf-0.13.1\src\ordered_map.rs C:\Users\SAROJ\ KASTI\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\phf-0.13.1\src\ordered_set.rs C:\Users\SAROJ\ KASTI\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\phf-0.13.1\src\set.rs
+
+C:\Users\SAROJ KASTI\Desktop\Dynamic qr system\src-tauri\target-installer\release\deps\libphf-7b74ecef482a3e43.rlib: C:\Users\SAROJ\ KASTI\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\phf-0.13.1\src\lib.rs C:\Users\SAROJ\ KASTI\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\phf-0.13.1\src\map.rs C:\Users\SAROJ\ KASTI\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\phf-0.13.1\src\ordered_map.rs C:\Users\SAROJ\ KASTI\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\phf-0.13.1\src\ordered_set.rs C:\Users\SAROJ\ KASTI\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\phf-0.13.1\src\set.rs
+
+C:\Users\SAROJ KASTI\Desktop\Dynamic qr system\src-tauri\target-installer\release\deps\libphf-7b74ecef482a3e43.rmeta: C:\Users\SAROJ\ KASTI\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\phf-0.13.1\src\lib.rs C:\Users\SAROJ\ KASTI\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\phf-0.13.1\src\map.rs C:\Users\SAROJ\ KASTI\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\phf-0.13.1\src\ordered_map.rs C:\Users\SAROJ\ KASTI\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\phf-0.13.1\src\ordered_set.rs C:\Users\SAROJ\ KASTI\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\phf-0.13.1\src\set.rs
+
+C:\Users\SAROJ\ KASTI\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\phf-0.13.1\src\lib.rs:
+C:\Users\SAROJ\ KASTI\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\phf-0.13.1\src\map.rs:
+C:\Users\SAROJ\ KASTI\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\phf-0.13.1\src\ordered_map.rs:
+C:\Users\SAROJ\ KASTI\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\phf-0.13.1\src\ordered_set.rs:
+C:\Users\SAROJ\ KASTI\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\phf-0.13.1\src\set.rs:

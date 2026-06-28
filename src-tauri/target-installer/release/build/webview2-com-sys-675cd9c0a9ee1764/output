@@ -1,0 +1,2 @@
+cargo:rustc-link-search=native=C:\Users\SAROJ KASTI\Desktop\Dynamic qr system\src-tauri\target-installer\release\build\webview2-com-sys-675cd9c0a9ee1764\out\x64
+cargo:rustc-link-lib=advapi32

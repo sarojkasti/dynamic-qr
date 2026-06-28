@@ -1,0 +1,38 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Dynamic QR System",
+  "version": "0.1.0",
+  "identifier": "com.dynamicqr.system",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:5174",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Dynamic QR System",
+        "width": 1180,
+        "height": 760,
+        "minWidth": 920,
+        "minHeight": 620
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.ico"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "startMenuFolder": "Dynamic QR System",
+        "installerHooks": "installer-hooks.nsh"
+      }
+    }
+  }
+}
