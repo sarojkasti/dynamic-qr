@@ -46,12 +46,6 @@ impl DbDialect {
         }
     }
 
-    fn nz(&self, expr: &str, default: &str) -> String {
-        match self {
-            DbDialect::SqlServer => format!("ISNULL({expr}, {default})"),
-            DbDialect::Access => format!("IIf(IsNull({expr}), {default}, {expr})"),
-        }
-    }
 
     // Equivalent of COALESCE(NULLIF(a,''), NULLIF(b,''), fallback)
     fn coalesce_nonempty(&self, exprs: &[&str], fallback: &str) -> String {
