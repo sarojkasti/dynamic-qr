@@ -49,7 +49,7 @@ impl DbDialect {
     fn nz(&self, expr: &str, default: &str) -> String {
         match self {
             DbDialect::SqlServer => format!("ISNULL({expr}, {default})"),
-            DbDialect::Access => format!("Nz({expr}, {default})"),
+            DbDialect::Access => format!("IIf(IsNull({expr}), {default}, {expr})"),
         }
     }
 
@@ -74,7 +74,7 @@ impl DbDialect {
     fn nonempty_condition(&self, expr: &str) -> String {
         match self {
             DbDialect::SqlServer => format!("NULLIF(LTRIM(RTRIM({expr})), '') IS NOT NULL"),
-            DbDialect::Access => format!("Nz(Trim({expr}), '') <> ''"),
+            DbDialect::Access => format!("(Not IsNull({expr}) And Trim({expr}) <> '')"),
         }
     }
 
