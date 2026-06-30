@@ -367,7 +367,8 @@ async function handleBusySettingsSubmit(form) {
     salesVoucherType: Number.parseInt(form.salesVoucherType.value, 10),
     paymentStatusTable: form.paymentStatusTable.value.trim(),
     paymentStatusColumn: form.paymentStatusColumn.value.trim(),
-    paymentTransactionIdColumn: form.paymentTransactionIdColumn.value.trim()
+    paymentTransactionIdColumn: form.paymentTransactionIdColumn.value.trim(),
+    dbType: form.dbType.value || null
   };
 
   state.notificationsEnabled = Boolean(form.notificationsEnabled?.checked);
@@ -974,6 +975,13 @@ function renderBusySettingsModal() {
         <label>
           Transaction ID column
           <input name="paymentTransactionIdColumn" value="${escapeHtml(settings.paymentTransactionIdColumn)}" required />
+        </label>
+        <label>
+          Database type
+          <select name="dbType">
+            <option value="sql_server" ${(settings.dbType ?? "sql_server") === "sql_server" ? "selected" : ""}>SQL Server (Busy)</option>
+            <option value="access" ${settings.dbType === "access" ? "selected" : ""}>MS Access</option>
+          </select>
         </label>
         <label>
           <input name="notificationsEnabled" type="checkbox" ${state.notificationsEnabled ? "checked" : ""} />

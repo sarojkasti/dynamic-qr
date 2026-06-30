@@ -11,6 +11,74 @@ use odbc_api::{
 
 use crate::models::{BusySettings, BusySettingsState, Invoice, InvoiceWatchEvent};
 
+#[derive(Clone, PartialEq)]
+enum DbDialect {
+    SqlServer,
+    Access,
+}
+
+impl DbDialect {
+    fn from_settings(settings: &BusySettings) -> Self {
+        match settings.db_type.as_deref() {
+            Some("access") => DbDialect::Access,
+            _ => DbDialect::SqlServer,
+        }
+    }
+
+    fn cast_str(&self, expr: &str) -> String {
+        match self {
+            DbDialect::SqlServer => format!("CAST({expr} AS varchar(64))"),
+            DbDialect::Access => format!("CStr({expr})"),
+        }
+    }
+
+    fn format_date(&self, expr: &str) -> String {
+        match self {
+            DbDialect::SqlServer => format!("CONVERT(varchar(10), {expr}, 120)"),
+            DbDialect::Access => format!("Format({expr}, 'yyyy-mm-dd')"),
+        }
+    }
+
+    fn trim(&self, expr: &str) -> String {
+        match self {
+            DbDialect::SqlServer => format!("LTRIM(RTRIM({expr}))"),
+            DbDialect::Access => format!("Trim({expr})"),
+        }
+    }
+
+    fn nz(&self, expr: &str, default: &str) -> String {
+        match self {
+            DbDialect::SqlServer => format!("ISNULL({expr}, {default})"),
+            DbDialect::Access => format!("Nz({expr}, {default})"),
+        }
+    }
+
+    // Equivalent of COALESCE(NULLIF(a,''), NULLIF(b,''), fallback)
+    fn coalesce_nonempty(&self, exprs: &[&str], fallback: &str) -> String {
+        match self {
+            DbDialect::SqlServer => {
+                let parts: Vec<String> = exprs.iter().map(|e| format!("NULLIF({e}, '')")).collect();
+                format!("COALESCE({}, {fallback})", parts.join(", "))
+            }
+            DbDialect::Access => {
+                let mut result = fallback.to_string();
+                for e in exprs.iter().rev() {
+                    result = format!("IIf(Not IsNull({e}) And {e}<>'', {e}, {result})");
+                }
+                result
+            }
+        }
+    }
+
+    // Equivalent of NULLIF(LTRIM(RTRIM(expr)), '') IS NOT NULL
+    fn nonempty_condition(&self, expr: &str) -> String {
+        match self {
+            DbDialect::SqlServer => format!("NULLIF(LTRIM(RTRIM({expr})), '') IS NOT NULL"),
+            DbDialect::Access => format!("Nz(Trim({expr}), '') <> ''"),
+        }
+    }
+}
+
 static ODBC_ENV: OnceLock<Result<Environment, String>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
@@ -107,6 +175,7 @@ impl BusySettings {
             settlement_cash_mode_name: None,
             settlement_credit_mode_name: None,
             pos_credit_column: None,
+            db_type: None,
         }
     }
 }
@@ -125,23 +194,33 @@ impl BusyDb {
         let table = checked_identifier(&settings.invoice_table)?;
         let status_table = checked_identifier(&settings.payment_status_table)?;
         let status_column = checked_column_identifier(&settings.payment_status_column)?;
-        let amount = invoice_amount_sql(settings.pos_credit_column.as_deref());
+        let dialect = DbDialect::from_settings(&settings);
+        let amount = invoice_amount_sql(settings.pos_credit_column.as_deref(), &dialect);
         let amount_value = amount.value_expression;
         let amount_source = amount.source_expression;
+        let date_expr = dialect.format_date("t.Date");
+        let cast_mastercode = dialect.cast_str("t.MasterCode1");
+        let cast_vchtype = dialect.cast_str("t.VchType");
+        let party_name_expr =
+            dialect.coalesce_nonempty(&["m.PrintName", "m.Name"], &cast_mastercode);
+        let status_expr =
+            dialect.coalesce_nonempty(&[&format!("oi.[{status_column}]")], &cast_vchtype);
+        let trim_vchno = dialect.trim("t.VchNo");
+        let trim_param = dialect.trim("?");
         let sql = format!(
             "SELECT TOP 1 t.VchCode, \
                     t.VchSeriesCode, \
                     VchNo, \
-                    CONVERT(varchar(10), t.Date, 120), \
+                    {date_expr}, \
                     t.NepaliDate, \
-                    COALESCE(NULLIF(m.PrintName, ''), NULLIF(m.Name, ''), CAST(t.MasterCode1 AS varchar(64))), \
+                    {party_name_expr}, \
                     {amount_value}, \
                     {amount_source}, \
-                    COALESCE(NULLIF(oi.[{status_column}], ''), CAST(t.VchType AS varchar(64))) \
+                    {status_expr} \
              FROM {table} t \
              LEFT JOIN Master1 m ON m.Code = t.MasterCode1 \
              LEFT JOIN {status_table} oi ON oi.VchCode = t.VchCode \
-             WHERE LTRIM(RTRIM(t.VchNo)) = LTRIM(RTRIM(?)) AND t.Cancelled = 0 AND t.VchType = ? \
+             WHERE {trim_vchno} = {trim_param} AND t.Cancelled = 0 AND t.VchType = ? \
              ORDER BY t.Date DESC, t.VchCode DESC"
         );
 
@@ -168,19 +247,28 @@ impl BusyDb {
         let table = checked_identifier(&settings.invoice_table)?;
         let status_table = checked_identifier(&settings.payment_status_table)?;
         let status_column = checked_column_identifier(&settings.payment_status_column)?;
-        let amount = invoice_amount_sql(settings.pos_credit_column.as_deref());
+        let dialect = DbDialect::from_settings(&settings);
+        let amount = invoice_amount_sql(settings.pos_credit_column.as_deref(), &dialect);
         let amount_value = amount.value_expression;
         let amount_source = amount.source_expression;
+        let date_expr = dialect.format_date("t.Date");
+        let cast_mastercode = dialect.cast_str("t.MasterCode1");
+        let cast_vchtype = dialect.cast_str("t.VchType");
+        let party_name_expr =
+            dialect.coalesce_nonempty(&["m.PrintName", "m.Name"], &cast_mastercode);
+        let status_expr =
+            dialect.coalesce_nonempty(&[&format!("oi.[{status_column}]")], &cast_vchtype);
+        let date_expr_str = date_expr;
         let sql = format!(
             "SELECT TOP 1 t.VchCode, \
                     t.VchSeriesCode, \
                     VchNo, \
-                    CONVERT(varchar(10), t.Date, 120), \
+                    {date_expr_str}, \
                     t.NepaliDate, \
-                    COALESCE(NULLIF(m.PrintName, ''), NULLIF(m.Name, ''), CAST(t.MasterCode1 AS varchar(64))), \
+                    {party_name_expr}, \
                     {amount_value}, \
                     {amount_source}, \
-                    COALESCE(NULLIF(oi.[{status_column}], ''), CAST(t.VchType AS varchar(64))) \
+                    {status_expr} \
              FROM {table} t \
              LEFT JOIN Master1 m ON m.Code = t.MasterCode1 \
              LEFT JOIN {status_table} oi ON oi.VchCode = t.VchCode \
@@ -210,28 +298,36 @@ impl BusyDb {
         let table = checked_identifier(&settings.invoice_table)?;
         let status_table = checked_identifier(&settings.payment_status_table)?;
         let status_column = checked_column_identifier(&settings.payment_status_column)?;
-        let amount = invoice_amount_sql(settings.pos_credit_column.as_deref());
+        let dialect = DbDialect::from_settings(&settings);
+        let amount = invoice_amount_sql(settings.pos_credit_column.as_deref(), &dialect);
         let amount_value = amount.value_expression;
         let amount_source = amount.source_expression;
+        let date_expr = dialect.format_date("t.Date");
+        let cast_mastercode = dialect.cast_str("t.MasterCode1");
+        let cast_vchtype = dialect.cast_str("t.VchType");
+        let party_name_expr =
+            dialect.coalesce_nonempty(&["m.PrintName", "m.Name"], &cast_mastercode);
+        let status_expr =
+            dialect.coalesce_nonempty(&[&format!("oi.[{status_column}]")], &cast_vchtype);
+        let vchno_nonempty = dialect.nonempty_condition("t.VchNo");
         let limit = limit.clamp(1, 200);
         let sql = format!(
             "SELECT TOP {limit} t.VchCode, \
                     t.VchSeriesCode, \
                     VchNo, \
-                    CONVERT(varchar(10), t.Date, 120), \
+                    {date_expr}, \
                     t.NepaliDate, \
-                    COALESCE(NULLIF(m.PrintName, ''), NULLIF(m.Name, ''), CAST(t.MasterCode1 AS varchar(64))), \
+                    {party_name_expr}, \
                     {amount_value}, \
                     {amount_source}, \
-                    COALESCE(NULLIF(oi.[{status_column}], ''), CAST(t.VchType AS varchar(64))) \
+                    {status_expr} \
              FROM {table} t \
              LEFT JOIN Master1 m ON m.Code = t.MasterCode1 \
              LEFT JOIN {status_table} oi ON oi.VchCode = t.VchCode \
              WHERE t.Cancelled = 0 \
                AND t.VchType = {voucher_type} \
-               AND NULLIF(LTRIM(RTRIM(t.VchNo)), '') IS NOT NULL \
-             ORDER BY t.Date DESC, t.VchCode DESC"
-            ,
+               AND {vchno_nonempty} \
+             ORDER BY t.Date DESC, t.VchCode DESC",
             voucher_type = settings.sales_voucher_type
         );
 
@@ -248,6 +344,7 @@ impl BusyDb {
         let status_table = checked_identifier(&settings.payment_status_table)?;
         let status_column = checked_column_identifier(&settings.payment_status_column)?;
         let txn_id_column = checked_column_identifier(&settings.payment_transaction_id_column)?;
+        let dialect = DbDialect::from_settings(&settings);
         let transaction_id = transaction_id
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
@@ -268,6 +365,63 @@ impl BusyDb {
             .ok_or_else(|| "Sales voucher was not found for this invoice number.".to_string())?;
 
         let conn = self.connect()?;
+
+        if dialect == DbDialect::Access {
+            // Check if row exists — Access doesn't support IF EXISTS ... UPDATE ... ELSE INSERT
+            let check_sql = format!("SELECT COUNT(*) FROM {status_table} WHERE VchCode = ?");
+            let check_param = vch_code.into_parameter();
+            let mut cursor = conn
+                .execute(&check_sql, (&check_param,), Some(15))
+                .map_err(|e| e.to_string())?
+                .ok_or("No cursor from count query")?;
+            let exists = cursor
+                .next_row()
+                .map_err(|e| e.to_string())?
+                .and_then(|mut row| read_text(&mut row, 1).ok().flatten())
+                .and_then(|v| v.parse::<i32>().ok())
+                .unwrap_or(0)
+                > 0;
+
+            if let Some(ref transaction_id) = transaction_id {
+                if exists {
+                    let sql = format!(
+                        "UPDATE {status_table} SET [{status_column}] = ?, [{txn_id_column}] = ? WHERE VchCode = ?"
+                    );
+                    let paid_param = "Paid".into_parameter();
+                    let txn_param = transaction_id.as_str().into_parameter();
+                    let vch_param = vch_code.into_parameter();
+                    conn.execute(&sql, (&paid_param, &txn_param, &vch_param), Some(15))
+                        .map_err(|e| e.to_string())?;
+                } else {
+                    let sql = format!(
+                        "INSERT INTO {status_table} (VchCode, [{status_column}], [{txn_id_column}]) VALUES (?, ?, ?)"
+                    );
+                    let vch_param = vch_code.into_parameter();
+                    let paid_param = "Paid".into_parameter();
+                    let txn_param = transaction_id.as_str().into_parameter();
+                    conn.execute(&sql, (&vch_param, &paid_param, &txn_param), Some(15))
+                        .map_err(|e| e.to_string())?;
+                }
+            } else if exists {
+                let sql = format!(
+                    "UPDATE {status_table} SET [{status_column}] = ? WHERE VchCode = ?"
+                );
+                let paid_param = "Paid".into_parameter();
+                let vch_param = vch_code.into_parameter();
+                conn.execute(&sql, (&paid_param, &vch_param), Some(15))
+                    .map_err(|e| e.to_string())?;
+            } else {
+                let sql = format!(
+                    "INSERT INTO {status_table} (VchCode, [{status_column}]) VALUES (?, ?)"
+                );
+                let vch_param = vch_code.into_parameter();
+                let paid_param = "Paid".into_parameter();
+                conn.execute(&sql, (&vch_param, &paid_param), Some(15))
+                    .map_err(|e| e.to_string())?;
+            }
+
+            return self.get_invoice_by_id(invoice_no);
+        }
 
         if let Some(transaction_id) = transaction_id {
             let sql = format!(
@@ -329,25 +483,34 @@ impl BusyDb {
         let table = checked_identifier(&settings.invoice_table)?;
         let status_table = checked_identifier(&settings.payment_status_table)?;
         let status_column = checked_column_identifier(&settings.payment_status_column)?;
-        let amount = invoice_amount_sql(settings.pos_credit_column.as_deref());
+        let dialect = DbDialect::from_settings(&settings);
+        let amount = invoice_amount_sql(settings.pos_credit_column.as_deref(), &dialect);
         let amount_value = amount.value_expression;
         let amount_source = amount.source_expression;
+        let date_expr = dialect.format_date("t.Date");
+        let cast_mastercode = dialect.cast_str("t.MasterCode1");
+        let cast_vchtype = dialect.cast_str("t.VchType");
+        let party_name_expr =
+            dialect.coalesce_nonempty(&["m.PrintName", "m.Name"], &cast_mastercode);
+        let status_expr =
+            dialect.coalesce_nonempty(&[&format!("oi.[{status_column}]")], &cast_vchtype);
+        let trim_vchno = dialect.trim("t.VchNo");
         let sql = format!(
             "SELECT TOP 50 t.VchCode, \
                     t.VchSeriesCode, \
                     VchNo, \
-                    CONVERT(varchar(10), t.Date, 120), \
+                    {date_expr}, \
                     t.NepaliDate, \
-                    COALESCE(NULLIF(m.PrintName, ''), NULLIF(m.Name, ''), CAST(t.MasterCode1 AS varchar(64))), \
+                    {party_name_expr}, \
                     {amount_value}, \
                     {amount_source}, \
-                    COALESCE(NULLIF(oi.[{status_column}], ''), CAST(t.VchType AS varchar(64))) \
+                    {status_expr} \
              FROM {table} t \
              LEFT JOIN Master1 m ON m.Code = t.MasterCode1 \
              LEFT JOIN {status_table} oi ON oi.VchCode = t.VchCode \
              WHERE t.Cancelled = 0 \
                AND t.VchType = ? \
-               AND (LTRIM(RTRIM(t.VchNo)) LIKE ? OR CAST(t.MasterCode1 AS varchar(64)) LIKE ? OR m.Name LIKE ? OR m.PrintName LIKE ?) \
+               AND ({trim_vchno} LIKE ? OR {cast_mastercode} LIKE ? OR m.Name LIKE ? OR m.PrintName LIKE ?) \
              ORDER BY t.Date DESC, t.VchCode DESC"
         );
 
@@ -379,12 +542,14 @@ impl BusyDb {
     pub fn latest_invoice_vch_code(&self) -> Result<i32, String> {
         let settings = self.settings()?;
         let table = checked_identifier(&settings.invoice_table)?;
+        let dialect = DbDialect::from_settings(&settings);
+        let vchno_nonempty = dialect.nonempty_condition("t.VchNo");
         let sql = format!(
             "SELECT TOP 1 t.VchCode \
              FROM {table} t \
              WHERE t.Cancelled = 0 \
                AND t.VchType = ? \
-               AND NULLIF(LTRIM(RTRIM(t.VchNo)), '') IS NOT NULL \
+               AND {vchno_nonempty} \
              ORDER BY t.VchCode DESC"
         );
 
@@ -414,6 +579,8 @@ impl BusyDb {
     ) -> Result<Vec<InvoiceWatchEvent>, String> {
         let settings = self.settings()?;
         let table = checked_identifier(&settings.invoice_table)?;
+        let dialect = DbDialect::from_settings(&settings);
+        let vchno_nonempty = dialect.nonempty_condition("t.VchNo");
         let sql = format!(
             "SELECT TOP 20 \
                     t.VchCode, \
@@ -422,7 +589,7 @@ impl BusyDb {
              FROM {table} t \
              WHERE t.Cancelled = 0 \
                AND t.VchType = ? \
-               AND NULLIF(LTRIM(RTRIM(t.VchNo)), '') IS NOT NULL \
+               AND {vchno_nonempty} \
                AND t.VchCode > ? \
              ORDER BY t.VchCode ASC"
         );
@@ -501,13 +668,17 @@ impl BusyDb {
         table: &str,
         invoice_no: &str,
     ) -> Result<Option<i32>, String> {
+        let settings = self.settings()?;
+        let dialect = DbDialect::from_settings(&settings);
+        let trim_vchno = dialect.trim("VchNo");
+        let trim_param = dialect.trim("?");
         let sql = format!(
             "SELECT VchCode FROM {table} \
-             WHERE LTRIM(RTRIM(VchNo)) = LTRIM(RTRIM(?)) AND Cancelled = 0 AND VchType = ?"
+             WHERE {trim_vchno} = {trim_param} AND Cancelled = 0 AND VchType = ?"
         );
         let conn = self.connect()?;
         let invoice_param = invoice_no.into_parameter();
-        let voucher_type_param = self.settings()?.sales_voucher_type.into_parameter();
+        let voucher_type_param = settings.sales_voucher_type.into_parameter();
         let params = (&invoice_param, &voucher_type_param);
         let mut cursor = match conn
             .execute(&sql, params, Some(15))
@@ -529,6 +700,14 @@ impl BusyDb {
         status_table: &str,
         status_column: &str,
     ) -> Result<(), String> {
+        let settings = self.settings()?;
+        let dialect = DbDialect::from_settings(&settings);
+
+        // MS Access doesn't support INFORMATION_SCHEMA; skip type validation
+        if dialect == DbDialect::Access {
+            return Ok(());
+        }
+
         let sql = "SELECT DATA_TYPE \
                    FROM INFORMATION_SCHEMA.COLUMNS \
                    WHERE TABLE_NAME = ? AND COLUMN_NAME = ?";
@@ -655,37 +834,58 @@ struct InvoiceAmountSql {
     source_expression: String,
 }
 
-fn invoice_amount_sql(pos_credit_column: Option<&str>) -> InvoiceAmountSql {
-    const FALLBACK_AMOUNT: &str = "CAST(t.VchAmtBaseCur AS varchar(64))";
+fn invoice_amount_sql(pos_credit_column: Option<&str>, dialect: &DbDialect) -> InvoiceAmountSql {
+    let fallback_amount = dialect.cast_str("t.VchAmtBaseCur");
 
     let col = pos_credit_column
         .map(|c| c.trim())
         .filter(|c| !c.is_empty())
         .unwrap_or("CCAmt1");
 
-    let pos_credit_amount_expression = format!(
-        "CASE WHEN ISNULL(t.POSEnabled, 0) = 1 \
-        THEN (SELECT TOP 1 CAST(pd.[{col}] AS varchar(64)) \
-              FROM POSDet pd \
-              WHERE pd.VchCode = t.VchCode \
-                AND pd.[{col}] IS NOT NULL) \
-        END"
-    );
-    let pos_credit_exists_expression = format!(
-        "ISNULL(t.POSEnabled, 0) = 1 \
-        AND EXISTS (SELECT 1 \
-                    FROM POSDet pd \
-                    WHERE pd.VchCode = t.VchCode \
-                      AND pd.[{col}] IS NOT NULL)"
-    );
+    let pos_check = dialect.nz("t.POSEnabled", "0");
+
+    let pos_credit_amount_expression = match dialect {
+        DbDialect::SqlServer => format!(
+            "CASE WHEN {pos_check} = 1 \
+            THEN (SELECT TOP 1 CAST(pd.[{col}] AS varchar(64)) \
+                  FROM POSDet pd \
+                  WHERE pd.VchCode = t.VchCode \
+                    AND pd.[{col}] IS NOT NULL) \
+            END"
+        ),
+        DbDialect::Access => format!(
+            "IIf({pos_check} = 1, \
+            (SELECT TOP 1 CStr(pd.[{col}]) FROM POSDet pd WHERE pd.VchCode = t.VchCode AND pd.[{col}] IS NOT NULL), \
+            Null)"
+        ),
+    };
+
+    let pos_credit_exists_expression = match dialect {
+        DbDialect::SqlServer => format!(
+            "{pos_check} = 1 \
+            AND EXISTS (SELECT 1 \
+                        FROM POSDet pd \
+                        WHERE pd.VchCode = t.VchCode \
+                          AND pd.[{col}] IS NOT NULL)"
+        ),
+        DbDialect::Access => format!(
+            "{pos_check} = 1 \
+            AND (SELECT COUNT(*) FROM POSDet pd WHERE pd.VchCode = t.VchCode AND pd.[{col}] IS NOT NULL) > 0"
+        ),
+    };
 
     InvoiceAmountSql {
-        value_expression: format!("COALESCE({pos_credit_amount_expression}, {FALLBACK_AMOUNT})"),
-        source_expression: format!(
-            "CASE WHEN {pos_credit_exists_expression} \
-             THEN 'POSDet {col}' \
-             ELSE 'Invoice net amount' END"
-        ),
+        value_expression: format!("COALESCE({pos_credit_amount_expression}, {fallback_amount})"),
+        source_expression: match dialect {
+            DbDialect::SqlServer => format!(
+                "CASE WHEN {pos_credit_exists_expression} \
+                 THEN 'POSDet {col}' \
+                 ELSE 'Invoice net amount' END"
+            ),
+            DbDialect::Access => format!(
+                "IIf({pos_credit_exists_expression}, 'POSDet {col}', 'Invoice net amount')"
+            ),
+        },
     }
 }
 
@@ -701,7 +901,10 @@ fn validate_settings(settings: &BusySettings) -> Result<(), String> {
     if settings.payment_status_column.eq_ignore_ascii_case(&settings.payment_transaction_id_column) {
         return Err("Payment status column and transaction ID column must be different.".to_string());
     }
-    invoice_amount_sql(settings.pos_credit_column.as_deref());
+    invoice_amount_sql(
+        settings.pos_credit_column.as_deref(),
+        &DbDialect::from_settings(settings),
+    );
 
     if settings.sales_voucher_type <= 0 {
         return Err("Sales voucher type must be greater than zero.".to_string());

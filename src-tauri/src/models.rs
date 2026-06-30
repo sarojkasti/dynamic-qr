@@ -42,6 +42,8 @@ pub struct BusySettings {
     pub settlement_credit_mode_name: Option<String>,
     #[serde(default)]
     pub pos_credit_column: Option<String>,
+    #[serde(default)]
+    pub db_type: Option<String>,
 }
 
 fn default_payment_transaction_id_column() -> String {
