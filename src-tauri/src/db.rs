@@ -28,7 +28,7 @@ impl DbDialect {
     fn cast_str(&self, expr: &str) -> String {
         match self {
             DbDialect::SqlServer => format!("CAST({expr} AS varchar(64))"),
-            DbDialect::Access => format!("CStr({expr})"),
+            DbDialect::Access => format!("({expr} & '')"),
         }
     }
 
@@ -875,53 +875,46 @@ fn invoice_amount_sql(pos_credit_column: Option<&str>, dialect: &DbDialect) -> I
         .filter(|c| !c.is_empty())
         .unwrap_or("CCAmt1");
 
-    let pos_check = dialect.nz("t.POSEnabled", "0");
-
-    let pos_credit_amount_expression = match dialect {
-        DbDialect::SqlServer => format!(
-            "CASE WHEN {pos_check} = 1 \
-            THEN (SELECT TOP 1 CAST(pd.[{col}] AS varchar(64)) \
-                  FROM POSDet pd \
-                  WHERE pd.VchCode = t.VchCode \
-                    AND pd.[{col}] IS NOT NULL) \
-            END"
-        ),
-        DbDialect::Access => format!(
-            "IIf({pos_check} = 1, \
-            (SELECT TOP 1 CStr(pd.[{col}]) FROM POSDet pd WHERE pd.VchCode = t.VchCode AND pd.[{col}] IS NOT NULL), \
-            Null)"
-        ),
-    };
-
-    let pos_credit_exists_expression = match dialect {
-        DbDialect::SqlServer => format!(
-            "{pos_check} = 1 \
-            AND EXISTS (SELECT 1 \
-                        FROM POSDet pd \
-                        WHERE pd.VchCode = t.VchCode \
-                          AND pd.[{col}] IS NOT NULL)"
-        ),
-        DbDialect::Access => format!(
-            "{pos_check} = 1 \
-            AND (SELECT COUNT(*) FROM POSDet pd WHERE pd.VchCode = t.VchCode AND pd.[{col}] IS NOT NULL) > 0"
-        ),
-    };
-
-    InvoiceAmountSql {
-        value_expression: match dialect {
-            DbDialect::SqlServer => format!("COALESCE({pos_credit_amount_expression}, {fallback_amount})"),
-            DbDialect::Access => format!("IIf(Not IsNull({pos_credit_amount_expression}), {pos_credit_amount_expression}, {fallback_amount})"),
-        },
-        source_expression: match dialect {
-            DbDialect::SqlServer => format!(
-                "CASE WHEN {pos_credit_exists_expression} \
-                 THEN 'POSDet {col}' \
-                 ELSE 'Invoice net amount' END"
-            ),
-            DbDialect::Access => format!(
-                "IIf({pos_credit_exists_expression}, 'POSDet {col}', 'Invoice net amount')"
-            ),
-        },
+    match dialect {
+        DbDialect::SqlServer => {
+            let pos_check = dialect.nz("t.POSEnabled", "0");
+            let pos_credit_amount_expression = format!(
+                "CASE WHEN {pos_check} = 1 \
+                THEN (SELECT TOP 1 CAST(pd.[{col}] AS varchar(64)) \
+                      FROM POSDet pd \
+                      WHERE pd.VchCode = t.VchCode \
+                        AND pd.[{col}] IS NOT NULL) \
+                END"
+            );
+            let pos_credit_exists_expression = format!(
+                "{pos_check} = 1 \
+                AND EXISTS (SELECT 1 FROM POSDet pd \
+                            WHERE pd.VchCode = t.VchCode AND pd.[{col}] IS NOT NULL)"
+            );
+            InvoiceAmountSql {
+                value_expression: format!("COALESCE({pos_credit_amount_expression}, {fallback_amount})"),
+                source_expression: format!(
+                    "CASE WHEN {pos_credit_exists_expression} \
+                     THEN 'POSDet {col}' ELSE 'Invoice net amount' END"
+                ),
+            }
+        }
+        DbDialect::Access => {
+            // Access: use configured column from POSDet if available (no POSEnabled check),
+            // fall back to base amount when no matching row exists.
+            let sub = format!(
+                "SELECT TOP 1 pd.[{col}] & '' FROM POSDet pd \
+                 WHERE pd.VchCode = t.VchCode AND pd.[{col}] IS NOT NULL"
+            );
+            InvoiceAmountSql {
+                value_expression: format!(
+                    "IIf(Not IsNull(({sub})), ({sub}), {fallback_amount})"
+                ),
+                source_expression: format!(
+                    "IIf(Not IsNull(({sub})), 'POSDet {col}', 'Invoice net amount')"
+                ),
+            }
+        }
     }
 }
 
