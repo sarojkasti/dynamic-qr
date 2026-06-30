@@ -908,7 +908,10 @@ fn invoice_amount_sql(pos_credit_column: Option<&str>, dialect: &DbDialect) -> I
     };
 
     InvoiceAmountSql {
-        value_expression: format!("COALESCE({pos_credit_amount_expression}, {fallback_amount})"),
+        value_expression: match dialect {
+            DbDialect::SqlServer => format!("COALESCE({pos_credit_amount_expression}, {fallback_amount})"),
+            DbDialect::Access => format!("IIf(Not IsNull({pos_credit_amount_expression}), {pos_credit_amount_expression}, {fallback_amount})"),
+        },
         source_expression: match dialect {
             DbDialect::SqlServer => format!(
                 "CASE WHEN {pos_credit_exists_expression} \
