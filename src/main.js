@@ -328,7 +328,8 @@ async function handleBankSubmit(form) {
     merchantSecretKey: form.merchantSecretKey.value.trim(),
     fonepayDynamicUrl: form.fonepayDynamicUrl?.value.trim() || "",
     fonepayPosApiUrl: form.fonepayPosApiUrl?.value.trim() || "",
-    fonepayIntegrationMode: form.fonepayIntegrationMode?.value.trim() || ""
+    fonepayIntegrationMode: form.fonepayIntegrationMode?.value.trim() || "",
+    posCreditColumn: form.posCreditColumn?.value.trim() || ""
   };
 
   try {
@@ -884,6 +885,10 @@ function renderBankPanel() {
               <option value="pos_api" ${editingBank?.fonepayIntegrationMode === "pos_api" ? "selected" : ""}>POS API</option>
             </select>
           </label>
+          <label>
+            POS credit column
+            <input name="posCreditColumn" placeholder="CCAmt1" value="${escapeHtml(editingBank?.posCreditColumn ?? "")}" />
+          </label>
         </fieldset>
         
         <button type="submit">${state.editingBankKey ? "Update bank" : "Save bank"}</button>
@@ -905,6 +910,7 @@ function renderBankPanel() {
               ${bank.fonepayDynamicUrl ? `<div><dt>Fonepay Dynamic URL</dt><dd>${escapeHtml(bank.fonepayDynamicUrl)}</dd></div>` : ""}
               ${bank.fonepayPosApiUrl ? `<div><dt>Fonepay POS API URL</dt><dd>${escapeHtml(bank.fonepayPosApiUrl)}</dd></div>` : ""}
               ${bank.fonepayIntegrationMode ? `<div><dt>Fonepay Integration Mode</dt><dd>${escapeHtml(bank.fonepayIntegrationMode)}</dd></div>` : ""}
+              ${bank.posCreditColumn ? `<div><dt>POS credit column</dt><dd>${escapeHtml(bank.posCreditColumn)}</dd></div>` : ""}
             </dl>
             <button class="secondary-button" type="button" data-edit-bank="${escapeHtml(bankIdentityKey(bank))}">Edit</button>
           </article>
@@ -1402,7 +1408,8 @@ async function publicBankSummary(bank) {
     merchantUsername: bank.merchantUsername,
     fonepayDynamicUrl: bank.fonepayDynamicUrl ?? "",
     fonepayPosApiUrl: bank.fonepayPosApiUrl ?? "",
-    fonepayIntegrationMode: bank.fonepayIntegrationMode ?? ""
+    fonepayIntegrationMode: bank.fonepayIntegrationMode ?? "",
+    posCreditColumn: bank.posCreditColumn ?? ""
   };
 }
 

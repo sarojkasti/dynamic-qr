@@ -61,7 +61,10 @@ pub fn mark_invoice_paid(
 }
 
 #[tauri::command]
-pub fn save_bank_merchant(bank: BankMerchant) -> Result<BankMerchant, ApiError> {
+pub fn save_bank_merchant(
+    db: State<'_, BusyDb>,
+    bank: BankMerchant,
+) -> Result<BankMerchant, ApiError> {
     if bank.name.trim().is_empty()
         || bank.bank_type.trim().is_empty()
         || bank.merchant_code.trim().is_empty()
@@ -87,6 +90,14 @@ pub fn save_bank_merchant(bank: BankMerchant) -> Result<BankMerchant, ApiError> 
             integration_mode: bank.fonepay_integration_mode.clone(),
         };
         let _ = crate::db::write_fonepay_settings(&fonepay_settings);
+    }
+
+    // Persist pos_credit_column into BusySettings so invoice queries use it
+    if !bank.pos_credit_column.trim().is_empty() {
+        if let Ok(mut settings) = db.settings() {
+            settings.pos_credit_column = Some(bank.pos_credit_column.trim().to_string());
+            let _ = db.save_settings(settings);
+        }
     }
 
     Ok(bank)
@@ -245,6 +256,7 @@ async fn generate_fonepay_third_party_dynamic_qr(
                 content_type,
                 base64_encode(&bytes)
             )),
+            remarks1: Some(remarks1.clone()),
             raw: serde_json::json!({ "contentType": content_type, "bytes": bytes.len() }),
         });
     }
@@ -290,6 +302,7 @@ async fn generate_fonepay_third_party_dynamic_qr(
     Ok(DynamicQrResponse {
         qr_text,
         image_data_url,
+        remarks1: Some(remarks1),
         raw,
     })
 }
@@ -417,6 +430,7 @@ async fn generate_fonepay_pos_dynamic_qr(
                 content_type,
                 base64_encode(&bytes)
             )),
+            remarks1: Some(remarks.clone()),
             raw: serde_json::json!({ "contentType": content_type, "bytes": bytes.len() }),
         });
     }
@@ -459,6 +473,7 @@ async fn generate_fonepay_pos_dynamic_qr(
     Ok(DynamicQrResponse {
         qr_text,
         image_data_url,
+        remarks1: Some(remarks),
         raw,
     })
 }

@@ -40,6 +40,8 @@ pub struct BusySettings {
     pub settlement_amount_column: Option<String>,
     pub settlement_cash_mode_name: Option<String>,
     pub settlement_credit_mode_name: Option<String>,
+    #[serde(default)]
+    pub pos_credit_column: Option<String>,
 }
 
 fn default_payment_transaction_id_column() -> String {
@@ -69,6 +71,8 @@ pub struct BankMerchant {
     pub fonepay_pos_api_url: String,
     #[serde(default)]
     pub fonepay_integration_mode: String,
+    #[serde(default)]
+    pub pos_credit_column: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +102,7 @@ pub struct DynamicQrRequest {
 pub struct DynamicQrResponse {
     pub qr_text: Option<String>,
     pub image_data_url: Option<String>,
+    pub remarks1: Option<String>,
     pub raw: serde_json::Value,
 }
 

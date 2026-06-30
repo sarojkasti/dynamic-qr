@@ -106,6 +106,7 @@ impl BusySettings {
             settlement_amount_column: None,
             settlement_cash_mode_name: None,
             settlement_credit_mode_name: None,
+            pos_credit_column: None,
         }
     }
 }
@@ -124,7 +125,7 @@ impl BusyDb {
         let table = checked_identifier(&settings.invoice_table)?;
         let status_table = checked_identifier(&settings.payment_status_table)?;
         let status_column = checked_column_identifier(&settings.payment_status_column)?;
-        let amount = invoice_amount_sql();
+        let amount = invoice_amount_sql(settings.pos_credit_column.as_deref());
         let amount_value = amount.value_expression;
         let amount_source = amount.source_expression;
         let sql = format!(
@@ -167,7 +168,7 @@ impl BusyDb {
         let table = checked_identifier(&settings.invoice_table)?;
         let status_table = checked_identifier(&settings.payment_status_table)?;
         let status_column = checked_column_identifier(&settings.payment_status_column)?;
-        let amount = invoice_amount_sql();
+        let amount = invoice_amount_sql(settings.pos_credit_column.as_deref());
         let amount_value = amount.value_expression;
         let amount_source = amount.source_expression;
         let sql = format!(
@@ -209,7 +210,7 @@ impl BusyDb {
         let table = checked_identifier(&settings.invoice_table)?;
         let status_table = checked_identifier(&settings.payment_status_table)?;
         let status_column = checked_column_identifier(&settings.payment_status_column)?;
-        let amount = invoice_amount_sql();
+        let amount = invoice_amount_sql(settings.pos_credit_column.as_deref());
         let amount_value = amount.value_expression;
         let amount_source = amount.source_expression;
         let limit = limit.clamp(1, 200);
@@ -328,7 +329,7 @@ impl BusyDb {
         let table = checked_identifier(&settings.invoice_table)?;
         let status_table = checked_identifier(&settings.payment_status_table)?;
         let status_column = checked_column_identifier(&settings.payment_status_column)?;
-        let amount = invoice_amount_sql();
+        let amount = invoice_amount_sql(settings.pos_credit_column.as_deref());
         let amount_value = amount.value_expression;
         let amount_source = amount.source_expression;
         let sql = format!(
@@ -654,26 +655,35 @@ struct InvoiceAmountSql {
     source_expression: String,
 }
 
-fn invoice_amount_sql() -> InvoiceAmountSql {
+fn invoice_amount_sql(pos_credit_column: Option<&str>) -> InvoiceAmountSql {
     const FALLBACK_AMOUNT: &str = "CAST(t.VchAmtBaseCur AS varchar(64))";
 
-    let pos_credit_amount_expression = "CASE WHEN ISNULL(t.POSEnabled, 0) = 1 \
-        THEN (SELECT TOP 1 CAST(pd.CCAmt1 AS varchar(64)) \
+    let col = pos_credit_column
+        .map(|c| c.trim())
+        .filter(|c| !c.is_empty())
+        .unwrap_or("CCAmt1");
+
+    let pos_credit_amount_expression = format!(
+        "CASE WHEN ISNULL(t.POSEnabled, 0) = 1 \
+        THEN (SELECT TOP 1 CAST(pd.[{col}] AS varchar(64)) \
               FROM POSDet pd \
               WHERE pd.VchCode = t.VchCode \
-                AND pd.CCAmt1 IS NOT NULL) \
-        END";
-    let pos_credit_exists_expression = "ISNULL(t.POSEnabled, 0) = 1 \
+                AND pd.[{col}] IS NOT NULL) \
+        END"
+    );
+    let pos_credit_exists_expression = format!(
+        "ISNULL(t.POSEnabled, 0) = 1 \
         AND EXISTS (SELECT 1 \
                     FROM POSDet pd \
                     WHERE pd.VchCode = t.VchCode \
-                      AND pd.CCAmt1 IS NOT NULL)";
+                      AND pd.[{col}] IS NOT NULL)"
+    );
 
     InvoiceAmountSql {
         value_expression: format!("COALESCE({pos_credit_amount_expression}, {FALLBACK_AMOUNT})"),
         source_expression: format!(
             "CASE WHEN {pos_credit_exists_expression} \
-             THEN 'POSDet CCAmt1' \
+             THEN 'POSDet {col}' \
              ELSE 'Invoice net amount' END"
         ),
     }
@@ -691,7 +701,7 @@ fn validate_settings(settings: &BusySettings) -> Result<(), String> {
     if settings.payment_status_column.eq_ignore_ascii_case(&settings.payment_transaction_id_column) {
         return Err("Payment status column and transaction ID column must be different.".to_string());
     }
-    invoice_amount_sql();
+    invoice_amount_sql(settings.pos_credit_column.as_deref());
 
     if settings.sales_voucher_type <= 0 {
         return Err("Sales voucher type must be greater than zero.".to_string());
