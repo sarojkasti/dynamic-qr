@@ -877,25 +877,19 @@ fn invoice_amount_sql(pos_credit_column: Option<&str>, dialect: &DbDialect) -> I
 
     match dialect {
         DbDialect::SqlServer => {
-            let pos_check = dialect.nz("t.POSEnabled", "0");
-            let pos_credit_amount_expression = format!(
-                "CASE WHEN {pos_check} = 1 \
-                THEN (SELECT TOP 1 CAST(pd.[{col}] AS varchar(64)) \
-                      FROM POSDet pd \
-                      WHERE pd.VchCode = t.VchCode \
-                        AND pd.[{col}] IS NOT NULL) \
-                END"
+            let pos_subquery = format!(
+                "SELECT TOP 1 CAST(pd.[{col}] AS varchar(64)) \
+                 FROM POSDet pd \
+                 WHERE pd.VchCode = t.VchCode AND pd.[{col}] IS NOT NULL"
             );
-            let pos_credit_exists_expression = format!(
-                "{pos_check} = 1 \
-                AND EXISTS (SELECT 1 FROM POSDet pd \
-                            WHERE pd.VchCode = t.VchCode AND pd.[{col}] IS NOT NULL)"
+            let pos_exists = format!(
+                "EXISTS (SELECT 1 FROM POSDet pd \
+                         WHERE pd.VchCode = t.VchCode AND pd.[{col}] IS NOT NULL)"
             );
             InvoiceAmountSql {
-                value_expression: format!("COALESCE({pos_credit_amount_expression}, {fallback_amount})"),
+                value_expression: format!("COALESCE(({pos_subquery}), {fallback_amount})"),
                 source_expression: format!(
-                    "CASE WHEN {pos_credit_exists_expression} \
-                     THEN 'POSDet {col}' ELSE 'Invoice net amount' END"
+                    "CASE WHEN {pos_exists} THEN 'POSDet {col}' ELSE 'Invoice net amount' END"
                 ),
             }
         }
