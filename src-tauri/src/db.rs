@@ -77,6 +77,13 @@ impl DbDialect {
             DbDialect::Access => format!("Nz(Trim({expr}), '') <> ''"),
         }
     }
+
+    fn query_timeout(&self) -> Option<usize> {
+        match self {
+            DbDialect::SqlServer => Some(15),
+            DbDialect::Access => None,
+        }
+    }
 }
 
 static ODBC_ENV: OnceLock<Result<Environment, String>> = OnceLock::new();
@@ -229,7 +236,7 @@ impl BusyDb {
         let voucher_type_param = settings.sales_voucher_type.into_parameter();
         let params = (&invoice_param, &voucher_type_param);
         let mut cursor = match conn
-            .execute(&sql, params, Some(15))
+            .execute(&sql, params, dialect.query_timeout())
             .map_err(|error| error.to_string())?
         {
             Some(cursor) => cursor,
@@ -280,7 +287,7 @@ impl BusyDb {
         let voucher_type_param = settings.sales_voucher_type.into_parameter();
         let params = (&vch_code_param, &voucher_type_param);
         let mut cursor = match conn
-            .execute(&sql, params, Some(15))
+            .execute(&sql, params, dialect.query_timeout())
             .map_err(|error| error.to_string())?
         {
             Some(cursor) => cursor,
@@ -331,7 +338,7 @@ impl BusyDb {
             voucher_type = settings.sales_voucher_type
         );
 
-        self.fetch_invoices(&sql, ())
+        self.fetch_invoices(&sql, (), dialect.query_timeout())
     }
 
     pub fn mark_invoice_paid(
@@ -371,7 +378,7 @@ impl BusyDb {
             let check_sql = format!("SELECT COUNT(*) FROM {status_table} WHERE VchCode = ?");
             let check_param = vch_code.into_parameter();
             let mut cursor = conn
-                .execute(&check_sql, (&check_param,), Some(15))
+                .execute(&check_sql, (&check_param,), dialect.query_timeout())
                 .map_err(|e| e.to_string())?
                 .ok_or("No cursor from count query")?;
             let exists = cursor
@@ -390,7 +397,7 @@ impl BusyDb {
                     let paid_param = "Paid".into_parameter();
                     let txn_param = transaction_id.as_str().into_parameter();
                     let vch_param = vch_code.into_parameter();
-                    conn.execute(&sql, (&paid_param, &txn_param, &vch_param), Some(15))
+                    conn.execute(&sql, (&paid_param, &txn_param, &vch_param), dialect.query_timeout())
                         .map_err(|e| e.to_string())?;
                 } else {
                     let sql = format!(
@@ -399,7 +406,7 @@ impl BusyDb {
                     let vch_param = vch_code.into_parameter();
                     let paid_param = "Paid".into_parameter();
                     let txn_param = transaction_id.as_str().into_parameter();
-                    conn.execute(&sql, (&vch_param, &paid_param, &txn_param), Some(15))
+                    conn.execute(&sql, (&vch_param, &paid_param, &txn_param), dialect.query_timeout())
                         .map_err(|e| e.to_string())?;
                 }
             } else if exists {
@@ -408,7 +415,7 @@ impl BusyDb {
                 );
                 let paid_param = "Paid".into_parameter();
                 let vch_param = vch_code.into_parameter();
-                conn.execute(&sql, (&paid_param, &vch_param), Some(15))
+                conn.execute(&sql, (&paid_param, &vch_param), dialect.query_timeout())
                     .map_err(|e| e.to_string())?;
             } else {
                 let sql = format!(
@@ -416,7 +423,7 @@ impl BusyDb {
                 );
                 let vch_param = vch_code.into_parameter();
                 let paid_param = "Paid".into_parameter();
-                conn.execute(&sql, (&vch_param, &paid_param), Some(15))
+                conn.execute(&sql, (&vch_param, &paid_param), dialect.query_timeout())
                     .map_err(|e| e.to_string())?;
             }
 
@@ -448,7 +455,7 @@ impl BusyDb {
                 &insert_transaction_param,
             );
 
-            conn.execute(&sql, params, Some(15))
+            conn.execute(&sql, params, dialect.query_timeout())
                 .map_err(|error| error.to_string())?;
         } else {
             let sql = format!(
@@ -471,7 +478,7 @@ impl BusyDb {
                 &insert_paid_param,
             );
 
-            conn.execute(&sql, params, Some(15))
+            conn.execute(&sql, params, dialect.query_timeout())
                 .map_err(|error| error.to_string())?;
         }
 
@@ -529,7 +536,7 @@ impl BusyDb {
             &print_name_param,
         );
         let mut cursor = match conn
-            .execute(&sql, params, Some(15))
+            .execute(&sql, params, dialect.query_timeout())
             .map_err(|error| error.to_string())?
         {
             Some(cursor) => cursor,
@@ -557,7 +564,7 @@ impl BusyDb {
         let voucher_type_param = settings.sales_voucher_type.into_parameter();
         let params = (&voucher_type_param,);
         let mut cursor = match conn
-            .execute(&sql, params, Some(15))
+            .execute(&sql, params, dialect.query_timeout())
             .map_err(|error| error.to_string())?
         {
             Some(cursor) => cursor,
@@ -599,7 +606,7 @@ impl BusyDb {
         let last_vch_code_param = last_vch_code.into_parameter();
         let params = (&voucher_type_param, &last_vch_code_param);
         let mut cursor = match conn
-            .execute(&sql, params, Some(15))
+            .execute(&sql, params, dialect.query_timeout())
             .map_err(|error| error.to_string())?
         {
             Some(cursor) => cursor,
@@ -647,13 +654,13 @@ impl BusyDb {
         .map_err(|error| error.to_string())
     }
 
-    fn fetch_invoices<P>(&self, sql: &str, params: P) -> Result<Vec<Invoice>, String>
+    fn fetch_invoices<P>(&self, sql: &str, params: P, timeout: Option<usize>) -> Result<Vec<Invoice>, String>
     where
         P: odbc_api::ParameterCollectionRef,
     {
         let conn = self.connect()?;
         let mut cursor = match conn
-            .execute(sql, params, Some(15))
+            .execute(sql, params, timeout)
             .map_err(|error| error.to_string())?
         {
             Some(cursor) => cursor,
@@ -681,7 +688,7 @@ impl BusyDb {
         let voucher_type_param = settings.sales_voucher_type.into_parameter();
         let params = (&invoice_param, &voucher_type_param);
         let mut cursor = match conn
-            .execute(&sql, params, Some(15))
+            .execute(&sql, params, dialect.query_timeout())
             .map_err(|error| error.to_string())?
         {
             Some(cursor) => cursor,
@@ -716,7 +723,7 @@ impl BusyDb {
         let column_param = status_column.into_parameter();
         let params = (&table_param, &column_param);
         let mut cursor = match conn
-            .execute(sql, params, Some(15))
+            .execute(sql, params, dialect.query_timeout())
             .map_err(|error| error.to_string())?
         {
             Some(cursor) => cursor,
