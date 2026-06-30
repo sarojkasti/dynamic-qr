@@ -541,9 +541,6 @@ async function generateInvoiceQr(invoice, key) {
   if (!amount || amount <= 0) {
     delete state.qrLoadingKeys[key];
     releaseQrGenerationLock(key);
-    if (!state.popupMode) {
-      await openInvoicePopup(invoice);
-    }
     render();
     return;
   }
