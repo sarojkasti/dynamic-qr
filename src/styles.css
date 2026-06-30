@@ -254,6 +254,8 @@ label {
   display: grid;
   gap: 14px;
   width: min(100%, 380px);
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
   border: 1px solid #d8e0e8;
   border-radius: 8px;
   padding: 20px;
