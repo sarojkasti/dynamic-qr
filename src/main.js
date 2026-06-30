@@ -536,10 +536,22 @@ async function getInvoiceQrPayload(invoice, shouldGenerate = false) {
 }
 
 async function generateInvoiceQr(invoice, key) {
+  const amount = parseFloat(invoice.netAmount ?? "0");
+
+  if (!amount || amount <= 0) {
+    delete state.qrLoadingKeys[key];
+    releaseQrGenerationLock(key);
+    if (!state.popupMode) {
+      await openInvoicePopup(invoice);
+    }
+    render();
+    return;
+  }
+
   try {
     const response = await generateFonepayDynamicQr({
       transactionId: invoice.invoiceNo,
-      amount: String(invoice.netAmount ?? "0"),
+      amount: String(invoice.netAmount),
       remarks1: String(invoice.partyName ?? invoice.invoiceNo).slice(0, 100),
       remarks2: String(invoice.invoiceDateNepali ?? invoice.invoiceDate ?? "N/A").slice(0, 50),
       paymentDate: formatFonepayDate(new Date())
@@ -695,7 +707,9 @@ function renderInvoicePopup(invoice) {
 
       ${invoice ? `
         <main class="popup-main">
-          <canvas id="qrCanvas" width="260" height="260"></canvas>
+          ${parseFloat(invoice.netAmount ?? "0") > 0
+            ? `<canvas id="qrCanvas" width="260" height="260"></canvas>`
+            : `<p class="qr-status">No QR — amount is zero</p>`}
           <dl class="popup-details">
             <div><dt>Party</dt><dd>${escapeHtml(invoice.partyName ?? "-")}</dd></div>
             <div><dt>Date</dt><dd>${escapeHtml(invoice.invoiceDateNepali ?? invoice.invoiceDate ?? "-")}</dd></div>
