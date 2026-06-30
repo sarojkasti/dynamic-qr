@@ -78,6 +78,21 @@ impl DbDialect {
         }
     }
 
+    // Access requires parens around multiple JOINs; SQL Server does not
+    fn two_left_joins(&self, table: &str, j1_table: &str, j1_on: &str, j2_table: &str, j2_on: &str) -> String {
+        match self {
+            DbDialect::SqlServer => format!(
+                "{table} \
+                 LEFT JOIN {j1_table} ON {j1_on} \
+                 LEFT JOIN {j2_table} ON {j2_on}"
+            ),
+            DbDialect::Access => format!(
+                "({table} LEFT JOIN {j1_table} ON {j1_on}) \
+                 LEFT JOIN {j2_table} ON {j2_on}"
+            ),
+        }
+    }
+
     fn query_timeout(&self) -> Option<usize> {
         match self {
             DbDialect::SqlServer => Some(15),
@@ -214,6 +229,11 @@ impl BusyDb {
             dialect.coalesce_nonempty(&[&format!("oi.[{status_column}]")], &cast_vchtype);
         let trim_vchno = dialect.trim("t.VchNo");
         let trim_param = dialect.trim("?");
+        let from_clause = dialect.two_left_joins(
+            &format!("{table} t"),
+            "Master1 m", "m.Code = t.MasterCode1",
+            &format!("{status_table} oi"), "oi.VchCode = t.VchCode",
+        );
         let sql = format!(
             "SELECT TOP 1 t.VchCode, \
                     t.VchSeriesCode, \
@@ -224,9 +244,7 @@ impl BusyDb {
                     {amount_value}, \
                     {amount_source}, \
                     {status_expr} \
-             FROM {table} t \
-             LEFT JOIN Master1 m ON m.Code = t.MasterCode1 \
-             LEFT JOIN {status_table} oi ON oi.VchCode = t.VchCode \
+             FROM {from_clause} \
              WHERE {trim_vchno} = {trim_param} AND t.Cancelled = 0 AND t.VchType = ? \
              ORDER BY t.Date DESC, t.VchCode DESC"
         );
@@ -265,20 +283,22 @@ impl BusyDb {
             dialect.coalesce_nonempty(&["m.PrintName", "m.Name"], &cast_mastercode);
         let status_expr =
             dialect.coalesce_nonempty(&[&format!("oi.[{status_column}]")], &cast_vchtype);
-        let date_expr_str = date_expr;
+        let from_clause = dialect.two_left_joins(
+            &format!("{table} t"),
+            "Master1 m", "m.Code = t.MasterCode1",
+            &format!("{status_table} oi"), "oi.VchCode = t.VchCode",
+        );
         let sql = format!(
             "SELECT TOP 1 t.VchCode, \
                     t.VchSeriesCode, \
                     VchNo, \
-                    {date_expr_str}, \
+                    {date_expr}, \
                     t.NepaliDate, \
                     {party_name_expr}, \
                     {amount_value}, \
                     {amount_source}, \
                     {status_expr} \
-             FROM {table} t \
-             LEFT JOIN Master1 m ON m.Code = t.MasterCode1 \
-             LEFT JOIN {status_table} oi ON oi.VchCode = t.VchCode \
+             FROM {from_clause} \
              WHERE t.VchCode = ? AND t.Cancelled = 0 AND t.VchType = ?"
         );
 
@@ -317,6 +337,11 @@ impl BusyDb {
         let status_expr =
             dialect.coalesce_nonempty(&[&format!("oi.[{status_column}]")], &cast_vchtype);
         let vchno_nonempty = dialect.nonempty_condition("t.VchNo");
+        let from_clause = dialect.two_left_joins(
+            &format!("{table} t"),
+            "Master1 m", "m.Code = t.MasterCode1",
+            &format!("{status_table} oi"), "oi.VchCode = t.VchCode",
+        );
         let limit = limit.clamp(1, 200);
         let sql = format!(
             "SELECT TOP {limit} t.VchCode, \
@@ -328,9 +353,7 @@ impl BusyDb {
                     {amount_value}, \
                     {amount_source}, \
                     {status_expr} \
-             FROM {table} t \
-             LEFT JOIN Master1 m ON m.Code = t.MasterCode1 \
-             LEFT JOIN {status_table} oi ON oi.VchCode = t.VchCode \
+             FROM {from_clause} \
              WHERE t.Cancelled = 0 \
                AND t.VchType = {voucher_type} \
                AND {vchno_nonempty} \
@@ -502,6 +525,11 @@ impl BusyDb {
         let status_expr =
             dialect.coalesce_nonempty(&[&format!("oi.[{status_column}]")], &cast_vchtype);
         let trim_vchno = dialect.trim("t.VchNo");
+        let from_clause = dialect.two_left_joins(
+            &format!("{table} t"),
+            "Master1 m", "m.Code = t.MasterCode1",
+            &format!("{status_table} oi"), "oi.VchCode = t.VchCode",
+        );
         let sql = format!(
             "SELECT TOP 50 t.VchCode, \
                     t.VchSeriesCode, \
@@ -512,9 +540,7 @@ impl BusyDb {
                     {amount_value}, \
                     {amount_source}, \
                     {status_expr} \
-             FROM {table} t \
-             LEFT JOIN Master1 m ON m.Code = t.MasterCode1 \
-             LEFT JOIN {status_table} oi ON oi.VchCode = t.VchCode \
+             FROM {from_clause} \
              WHERE t.Cancelled = 0 \
                AND t.VchType = ? \
                AND ({trim_vchno} LIKE ? OR {cast_mastercode} LIKE ? OR m.Name LIKE ? OR m.PrintName LIKE ?) \
