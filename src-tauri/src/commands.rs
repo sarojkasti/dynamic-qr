@@ -116,8 +116,13 @@ pub fn get_fonepay_settings() -> Result<FonepaySettings, ApiError> {
 }
 
 #[tauri::command]
-pub fn save_fonepay_settings(settings: FonepaySettings) -> Result<FonepaySettings, ApiError> {
-    crate::db::write_fonepay_settings(&settings).map_err(ApiError::from)
+pub fn save_fonepay_settings(db: tauri::State<'_, crate::db::BusyDb>, settings: FonepaySettings) -> Result<FonepaySettings, ApiError> {
+    crate::db::write_fonepay_settings(&settings).map_err(ApiError::from)?;
+    eprintln!("[Fonepay] save_settings: pos_credit_column={:?}", settings.pos_credit_column);
+    if !settings.pos_credit_column.trim().is_empty() {
+        db.set_pos_credit_column(settings.pos_credit_column.trim());
+    }
+    Ok(settings)
 }
 
 #[tauri::command]
@@ -736,8 +741,13 @@ pub fn get_nepalpay_settings() -> Result<NepalPaySettings, ApiError> {
 }
 
 #[tauri::command]
-pub fn save_nepalpay_settings(settings: NepalPaySettings) -> Result<NepalPaySettings, ApiError> {
-    crate::db::write_nepalpay_settings(&settings).map_err(ApiError::from)
+pub fn save_nepalpay_settings(db: tauri::State<'_, crate::db::BusyDb>, settings: NepalPaySettings) -> Result<NepalPaySettings, ApiError> {
+    crate::db::write_nepalpay_settings(&settings).map_err(ApiError::from)?;
+    eprintln!("[NepalPay] save_settings: pos_credit_column={:?}", settings.pos_credit_column);
+    if !settings.pos_credit_column.trim().is_empty() {
+        db.set_pos_credit_column(settings.pos_credit_column.trim());
+    }
+    Ok(settings)
 }
 
 #[tauri::command]
@@ -1087,10 +1097,13 @@ fn format_amount(value: &str) -> Result<String, ApiError> {
 }
 
 fn validate_amount(value: &str) -> Result<(), ApiError> {
-    value
+    let amount = value
         .parse::<f64>()
-        .map(|_| ())
-        .map_err(|_| ApiError::from("Amount must be a valid number"))
+        .map_err(|_| ApiError::from("Amount must be a valid number"))?;
+    if amount <= 0.0 {
+        return Err(ApiError::from("Amount must be greater than zero"));
+    }
+    Ok(())
 }
 
 fn fonepay_third_party_endpoint(configured_url: &str, endpoint_name: &str) -> String {

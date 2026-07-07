@@ -161,6 +161,19 @@ impl BusyDb {
         Ok(())
     }
 
+    /// Update only pos_credit_column in memory and persist to file — no full validation.
+    pub fn set_pos_credit_column(&self, col: &str) {
+        let col = col.trim().to_string();
+        eprintln!("[BusyDb] set_pos_credit_column: col={:?}", col);
+        if let Ok(mut current) = self.settings.write() {
+            current.pos_credit_column = Some(col);
+            // Best-effort persist so the column survives restarts
+            if let Ok(path) = settings_file_path() {
+                let _ = write_settings_file(&*current, &path);
+            }
+        }
+    }
+
     pub fn connection_summary(&self) -> String {
         self.settings()
             .map(|settings| mask_connection_string(&settings.connection_string))
@@ -211,6 +224,7 @@ impl BusyDb {
         let status_table = checked_identifier(&settings.payment_status_table)?;
         let status_column = checked_column_identifier(&settings.payment_status_column)?;
         let dialect = DbDialect::from_settings(&settings);
+        eprintln!("[DB] get_invoice_by_id: invoice_no={} pos_credit_column={:?} db_type={:?}", invoice_no, settings.pos_credit_column, settings.db_type);
         let amount = invoice_amount_sql(settings.pos_credit_column.as_deref(), &dialect);
         let amount_value = amount.value_expression;
         let amount_source = amount.source_expression;
@@ -320,6 +334,7 @@ impl BusyDb {
         let status_table = checked_identifier(&settings.payment_status_table)?;
         let status_column = checked_column_identifier(&settings.payment_status_column)?;
         let dialect = DbDialect::from_settings(&settings);
+        eprintln!("[DB] get_latest_invoices: pos_credit_column={:?} db_type={:?}", settings.pos_credit_column, settings.db_type);
         let amount = invoice_amount_sql(settings.pos_credit_column.as_deref(), &dialect);
         let amount_value = amount.value_expression;
         let amount_source = amount.source_expression;
