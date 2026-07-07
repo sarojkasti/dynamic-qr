@@ -152,11 +152,8 @@ pub struct NepalPaySettings {
     pub merchant_country: String,
     pub merchant_city: String,
     pub merchant_postal_code: String,
-    pub merchant_language: String,
     pub transaction_currency: i32,
     pub store_label: String,
-    pub terminal_label: String,
-    pub purpose_of_transaction: String,
     /// NPI-provided userId used in token string
     pub user_id: String,
     /// Absolute path to RSA private key PEM file (for token signing)
@@ -174,8 +171,6 @@ pub struct NepalPaySettings {
 pub struct NepalPayQrRequest {
     pub bill_number: String,
     pub transaction_amount: String,
-    pub reference_label: Option<String>,
-    pub mobile_no: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -800,21 +800,14 @@ pub async fn generate_nepalpay_dynamic_qr(
         "merchantCountry": settings.merchant_country.trim(),
         "merchantCity": settings.merchant_city.trim(),
         "merchantPostalCode": settings.merchant_postal_code.trim(),
-        "merchantLanguage": settings.merchant_language.trim(),
         "transactionCurrency": settings.transaction_currency,
         "transactionAmount": amount,
-        "valueOfConvenienceFeeFixed": "0.00",
         "billNumber": bill_number,
-        "referenceLabel": request.reference_label,
-        "mobileNo": request.mobile_no,
         "storeLabel": settings.store_label.trim(),
-        "terminalLabel": settings.terminal_label.trim(),
-        "purposeOfTransaction": settings.purpose_of_transaction.trim(),
-        "additionalConsumerDataRequest": null,
-        "loyaltyNumber": null,
         "qrImage": false,
         "token": token
     });
+
 
     let response = reqwest::Client::new()
         .post(&api_url)

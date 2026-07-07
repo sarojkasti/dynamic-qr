@@ -569,9 +569,7 @@ async function generateFonepayInvoiceQr(invoice) {
 async function generateNepalPayInvoiceQr(invoice) {
   const response = await generateNepalPayDynamicQr({
     billNumber: invoice.invoiceNo,
-    transactionAmount: String(invoice.netAmount),
-    referenceLabel: null,
-    mobileNo: null
+    transactionAmount: String(invoice.netAmount)
   });
 
   return {
@@ -985,24 +983,12 @@ function renderNepalPaySettingsPanel() {
           <input name="merchantPostalCode" placeholder="44600" value="${escapeHtml(s?.merchantPostalCode ?? "")}" required />
         </label>
         <label>
-          Merchant Language
-          <input name="merchantLanguage" placeholder="en" value="${escapeHtml(s?.merchantLanguage ?? "en")}" required />
-        </label>
-        <label>
           Transaction Currency (numeric ISO 4217)
           <input name="transactionCurrency" type="number" placeholder="524" value="${escapeHtml(s?.transactionCurrency ?? "524")}" required />
         </label>
         <label>
           Store Label
-          <input name="storeLabel" placeholder="1524525335" value="${escapeHtml(s?.storeLabel ?? "")}" />
-        </label>
-        <label>
-          Terminal Label
-          <input name="terminalLabel" placeholder="Terminal1" value="${escapeHtml(s?.terminalLabel ?? "")}" />
-        </label>
-        <label>
-          Purpose of Transaction
-          <input name="purposeOfTransaction" placeholder="Bill payment" value="${escapeHtml(s?.purposeOfTransaction ?? "")}" />
+          <input name="storeLabel" placeholder="1524525335" value="${escapeHtml(s?.storeLabel ?? "")}" required />
         </label>
         <label>
           NPI User ID
@@ -1250,11 +1236,8 @@ async function handleNepalPaySettingsSubmit(form) {
     merchantCountry: form.merchantCountry.value.trim(),
     merchantCity: form.merchantCity.value.trim(),
     merchantPostalCode: form.merchantPostalCode.value.trim(),
-    merchantLanguage: form.merchantLanguage.value.trim(),
     transactionCurrency: Number.parseInt(form.transactionCurrency.value, 10),
     storeLabel: form.storeLabel.value.trim(),
-    terminalLabel: form.terminalLabel.value.trim(),
-    purposeOfTransaction: form.purposeOfTransaction.value.trim(),
     userId: form.userId.value.trim(),
     privateKeyPath: form.privateKeyPath.value.trim(),
     publicKeyPath: form.publicKeyPath.value.trim(),
