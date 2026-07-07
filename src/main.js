@@ -106,6 +106,14 @@ async function boot() {
     state.busySettings = settingsState.settings;
     state.busySettingsConfigured = settingsState.isConfigured;
     state.busySettingsStoragePath = settingsState.storagePath;
+
+    console.log("[Boot] Settings loaded", {
+      busyConfigured: settingsState.isConfigured,
+      posCreditColumn: settingsState.settings?.posCreditColumn || "(not set)",
+      fonepayMerchantCode: fonepaySettings?.merchantCode ? "(set)" : "(missing)",
+      nepalPayMerchantId: nepalPaySettings?.merchantId ? "(set)" : "(missing)",
+      qrProvider: state.qrProvider,
+    });
     state.showBusySettings = !settingsState.isConfigured;
     state.launchInvoiceNo = launchInvoiceNo;
     state.watchLatest = settingsState.isConfigured || watchLatest;
@@ -516,8 +524,33 @@ async function generateInvoiceQr(invoice, key) {
   const amount = parseFloat(invoice.netAmount ?? "0");
   const posColumn = state.busySettings?.posCreditColumn?.trim();
 
+  console.log("[QR] generateInvoiceQr", {
+    invoiceNo: invoice.invoiceNo,
+    provider: state.qrProvider,
+    netAmount: invoice.netAmount,
+    parsedAmount: amount,
+    amountSource: invoice.amountSource,
+    posColumn: posColumn || "(not set)",
+    busySettingsLoaded: Boolean(state.busySettings),
+  });
+
   // POS column is mandatory — never fall back to net amount
-  if (!posColumn || invoice.amountSource === "Invoice net amount" || !amount || amount <= 0) {
+  if (!posColumn) {
+    console.warn("[QR] BLOCKED — POS Amount Column not configured in settings");
+    delete state.qrLoadingKeys[key];
+    releaseQrGenerationLock(key);
+    render();
+    return;
+  }
+  if (invoice.amountSource === "Invoice net amount") {
+    console.warn(`[QR] BLOCKED — amountSource is 'Invoice net amount' (POS column '${posColumn}' returned no data for this invoice)`);
+    delete state.qrLoadingKeys[key];
+    releaseQrGenerationLock(key);
+    render();
+    return;
+  }
+  if (!amount || amount <= 0) {
+    console.warn(`[QR] BLOCKED — parsed amount is ${amount} (netAmount = ${invoice.netAmount})`);
     delete state.qrLoadingKeys[key];
     releaseQrGenerationLock(key);
     render();
@@ -528,15 +561,20 @@ async function generateInvoiceQr(invoice, key) {
     let payload;
 
     if (state.qrProvider === "nepalpay") {
+      console.log("[QR] Calling Nepal Pay QR API", { billNumber: invoice.invoiceNo, transactionAmount: String(invoice.netAmount) });
       payload = await generateNepalPayInvoiceQr(invoice);
+      console.log("[QR] Nepal Pay QR API response", { qrText: payload?.qrText ? "(present)" : "(missing)", validationTraceId: payload?.validationTraceId });
     } else {
+      console.log("[QR] Calling Fonepay QR API", { transactionId: invoice.invoiceNo, amount: String(invoice.netAmount) });
       payload = await generateFonepayInvoiceQr(invoice);
+      console.log("[QR] Fonepay QR API response", { qrText: payload?.qrText ? "(present)" : "(missing)", imageDataUrl: payload?.imageDataUrl ? "(present)" : "(missing)" });
     }
 
     state.qrPayloads[key] = await persistQrSnapshot(payload);
     saveQrPayloads(state.qrPayloads);
     state.error = "";
   } catch (error) {
+    console.error("[QR] QR generation failed", { provider: state.qrProvider, invoiceNo: invoice.invoiceNo, error: String(error) });
     state.error = isDuplicateQrGenerationError(error)
       ? `QR already generated for invoice ${invoice.invoiceNo}.`
       : errorMessage(error);
@@ -1371,18 +1409,23 @@ function ensureNepalPayStompSocket(invoice, payload) {
 }
 
 function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
+  console.log("[NP-WS] Connecting", { wsUrl, invoiceNo: invoice.invoiceNo, retryCount: entry.retryCount });
   const socket = new WebSocket(wsUrl);
   entry.socket = socket;
 
   socket.onopen = () => {
+    console.log("[NP-WS] Connected — sending STOMP CONNECT");
     stompSend(socket, "CONNECT", { "accept-version": "1.2", "heart-beat": "0,0" }, "");
   };
 
   socket.onmessage = async (event) => {
     const frame = stompParse(event.data);
-    if (!frame) return;
+    if (!frame) { console.warn("[NP-WS] Could not parse frame:", event.data); return; }
+
+    console.log("[NP-WS] Frame received", { command: frame.command, bodyPreview: frame.body?.slice(0, 120) });
 
     if (frame.command === "CONNECTED") {
+      console.log("[NP-WS] STOMP CONNECTED — subscribing and sending transaction request");
       stompSend(socket, "SUBSCRIBE", {
         id: "sub-0",
         destination: "/user/nqrws/check-txn-status"
@@ -1394,7 +1437,18 @@ function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
         username: state.nepalPaySettings?.wsUsername ?? "",
         api_token: state.nepalPaySettings?.wsApiToken ?? ""
       });
+      console.log("[NP-WS] SEND payload", {
+        merchant_id: state.nepalPaySettings?.merchantId ?? "(missing)",
+        request_id: payload.validationTraceId,
+        username: state.nepalPaySettings?.wsUsername ? "(set)" : "(missing)",
+        api_token: state.nepalPaySettings?.wsApiToken ? "(set)" : "(missing)",
+      });
       stompSend(socket, "SEND", { destination: "/nqrws/check-txn-status", "content-type": "application/json" }, body);
+      return;
+    }
+
+    if (frame.command === "ERROR") {
+      console.error("[NP-WS] STOMP ERROR frame", frame.body);
       return;
     }
 
@@ -1404,9 +1458,10 @@ function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
     if (!current || current.handled) return;
 
     const message = parseJsonMaybe(frame.body);
-    if (!message) return;
+    if (!message) { console.warn("[NP-WS] MESSAGE body is not valid JSON:", frame.body); return; }
 
     const status = String(message.status ?? "").toUpperCase();
+    console.log("[NP-WS] Payment event", { status, message });
 
     if (status === "ENTR") {
       current.status = "entr";
@@ -1461,14 +1516,16 @@ function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
     }
   };
 
-  socket.onerror = () => {
+  socket.onerror = (event) => {
+    console.error("[NP-WS] WebSocket error", { invoiceNo: invoice.invoiceNo, wsUrl });
     const current = nepalPayStompSockets.get(key);
     if (!current || current.handled) return;
     current.status = "error";
     // Don't render here — onclose fires next and handles reconnect
   };
 
-  socket.onclose = () => {
+  socket.onclose = (event) => {
+    console.log("[NP-WS] WebSocket closed", { code: event.code, reason: event.reason, invoiceNo: invoice.invoiceNo });
     const current = nepalPayStompSockets.get(key);
     if (!current || current.handled) {
       if (current?.socket === socket) nepalPayStompSockets.delete(key);
@@ -1481,6 +1538,7 @@ function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
       const delay = Math.min(NP_RETRY_BASE_MS * Math.pow(2, current.retryCount), 30000);
       current.retryCount += 1;
       current.status = "error";
+      console.log(`[NP-WS] Reconnecting in ${delay}ms (attempt ${current.retryCount}/${NP_MAX_RETRIES})`);
       render();
       current.retryTimer = setTimeout(() => {
         const still = nepalPayStompSockets.get(key);
@@ -1492,6 +1550,7 @@ function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
       current.status = "error";
       _clearNepalPayTimers(current);
       nepalPayStompSockets.delete(key);
+      console.error(`[NP-WS] Max retries (${NP_MAX_RETRIES}) reached for invoice ${invoice.invoiceNo}`);
       state.error = `Nepal Pay: WebSocket connection failed after ${NP_MAX_RETRIES} retries for invoice ${invoice.invoiceNo}.`;
       render();
     }
