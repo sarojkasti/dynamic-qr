@@ -335,6 +335,28 @@ label {
   justify-content: space-between;
 }
 
+.np-status-entr {
+  color: #0369a1;
+}
+
+.np-status-parsed {
+  color: #7c3aed;
+  font-weight: 600;
+}
+
+.np-status-ok {
+  color: #15803d;
+  font-weight: 600;
+}
+
+.np-status-fail {
+  color: #b91c1c;
+}
+
+.np-status-warn {
+  color: #92400e;
+}
+
 .qr-provider-active {
   font-size: 0.8rem;
   font-weight: 600;

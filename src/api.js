@@ -227,14 +227,9 @@ export async function getNepalPaySettings() {
     merchantCountry: "NP",
     merchantCity: "",
     merchantPostalCode: "",
-    merchantLanguage: "en",
     transactionCurrency: 524,
     storeLabel: "",
-    terminalLabel: "",
-    purposeOfTransaction: "",
     userId: "",
-    privateKeyPath: "",
-    publicKeyPath: "",
     wsUrl: "",
     wsUsername: "",
     wsApiToken: ""
@@ -252,7 +247,6 @@ export async function generateNepalPayDynamicQr(request) {
     return {
       qrString: request.billNumber,
       validationTraceId: `PREVIEW-${request.billNumber}`,
-      wsEncryptedApiToken: null,
       raw: { preview: true }
     };
   }

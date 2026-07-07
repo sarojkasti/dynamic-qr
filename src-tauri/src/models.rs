@@ -154,12 +154,7 @@ pub struct NepalPaySettings {
     pub merchant_postal_code: String,
     pub transaction_currency: i32,
     pub store_label: String,
-    /// NPI-provided userId used in token string
     pub user_id: String,
-    /// Absolute path to RSA private key PEM file (for token signing)
-    pub private_key_path: String,
-    /// Absolute path to RSA public key PEM file (for ws api_token encryption)
-    pub public_key_path: String,
     pub ws_url: String,
     pub ws_username: String,
     /// Plain api_token — stored encrypted, decrypted before use
@@ -178,7 +173,5 @@ pub struct NepalPayQrRequest {
 pub struct NepalPayQrResponse {
     pub qr_string: Option<String>,
     pub validation_trace_id: Option<String>,
-    /// RSA-encrypted api_token ready for WebSocket STOMP request
-    pub ws_encrypted_api_token: Option<String>,
     pub raw: serde_json::Value,
 }
