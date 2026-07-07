@@ -142,7 +142,7 @@ async function boot() {
     }
 
     if (launchInvoiceNo) {
-      const invoice = await getInvoice(launchInvoiceNo);
+      const invoice = await getInvoice(launchInvoiceNo, activePosCreditColumn());
 
       if (invoice) {
         state.invoices = [invoice];
@@ -156,7 +156,7 @@ async function boot() {
         state.error = `Invoice ${launchInvoiceNo} was not found in Busy.`;
       }
     } else {
-      const latest = await getLatestInvoices(20);
+      const latest = await getLatestInvoices(20, activePosCreditColumn());
       state.invoices = latest;
       state.selectedInvoiceKey = invoiceKey(latest[0]);
       state.knownLatestInvoiceNo = invoiceKey(latest[0]);
@@ -220,7 +220,7 @@ async function handleSearch(form) {
   state.error = "";
 
   try {
-    const results = await searchInvoices(state.query);
+    const results = await searchInvoices(state.query, activePosCreditColumn());
     state.invoices = results;
     state.selectedInvoiceKey = invoiceKey(results[0]);
   } catch (error) {
@@ -236,7 +236,7 @@ async function handleLoadLatest() {
   state.query = "";
 
   try {
-    const latest = await getLatestInvoices(20);
+    const latest = await getLatestInvoices(20, activePosCreditColumn());
     state.invoices = latest;
     state.selectedInvoiceKey = invoiceKey(latest[0]);
   } catch (error) {
@@ -297,11 +297,11 @@ async function handleInvoiceWatchEvent(event) {
     let invoice = event.invoice;
 
     if (!invoice && event.vchCode) {
-      invoice = await getInvoiceByVchCode(event.vchCode);
+      invoice = await getInvoiceByVchCode(event.vchCode, activePosCreditColumn());
     }
 
     if (!invoice) {
-      invoice = await getInvoice(event.invoiceNo);
+      invoice = await getInvoice(event.invoiceNo, activePosCreditColumn());
     }
 
     if (!invoice?.invoiceNo || invoiceKey(invoice) === state.knownLatestInvoiceNo) {
@@ -334,7 +334,7 @@ async function loadPopupInvoice(invoiceNo, vchCode) {
   }
 
   try {
-    const invoice = vchCode ? await getInvoiceByVchCode(vchCode) : await getInvoice(invoiceNo);
+    const invoice = vchCode ? await getInvoiceByVchCode(vchCode, activePosCreditColumn()) : await getInvoice(invoiceNo, activePosCreditColumn());
 
     if (invoice) {
       state.invoices = [invoice];
@@ -377,7 +377,7 @@ async function handleBusySettingsSubmit(form) {
     state.error = "";
     state.successMessage = "Busy settings saved.";
 
-    const latest = await getLatestInvoices(20);
+    const latest = await getLatestInvoices(20, activePosCreditColumn());
     state.invoices = latest;
     state.selectedInvoiceKey = invoiceKey(latest[0]);
     state.knownLatestInvoiceNo = invoiceKey(latest[0]);
@@ -1356,19 +1356,20 @@ async function handleNepalPaySettingsSubmit(form) {
 }
 
 async function refreshInvoiceAmounts() {
+  const col = activePosCreditColumn();
   try {
     if (state.launchInvoiceNo) {
-      const invoice = await getInvoice(state.launchInvoiceNo);
+      const invoice = await getInvoice(state.launchInvoiceNo, col);
       if (invoice) {
         state.invoices = state.invoices.map((item) =>
           item.invoiceNo === invoice.invoiceNo ? invoice : item
         );
       }
     } else if (state.query) {
-      const results = await searchInvoices(state.query);
+      const results = await searchInvoices(state.query, col);
       state.invoices = results;
     } else {
-      const latest = await getLatestInvoices(20);
+      const latest = await getLatestInvoices(20, col);
       state.invoices = latest;
     }
     // Clear cached QR payloads so they regenerate with fresh amounts
@@ -1377,6 +1378,14 @@ async function refreshInvoiceAmounts() {
   } catch {
     // Non-critical — amounts will update on next invoice load
   }
+}
+
+function activePosCreditColumn() {
+  const col = (state.qrProvider === "nepalpay"
+    ? state.nepalPaySettings?.posCreditColumn
+    : state.fonepaySettings?.posCreditColumn
+  )?.trim();
+  return col || null;
 }
 
 function loadQrProvider() {
@@ -1781,7 +1790,7 @@ function handleStorageChange(event) {
 }
 
 async function refreshInvoiceAfterPayment(invoiceNo) {
-  const updatedInvoice = await getInvoice(invoiceNo);
+  const updatedInvoice = await getInvoice(invoiceNo, activePosCreditColumn());
 
   if (!updatedInvoice) return;
 

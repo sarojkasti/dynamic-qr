@@ -149,13 +149,13 @@ export async function listenToInvoicePopupUpdate(callback) {
   return WebviewWindow.getCurrent().listen("invoice-popup-update", (event) => callback(event.payload));
 }
 
-export async function getLatestInvoices(limit = 20) {
+export async function getLatestInvoices(limit = 20, posCreditColumn = null) {
   if (!canUseTauri()) return fallbackInvoices.slice(0, limit);
-  return invoke("get_latest_invoices", { limit });
+  return invoke("get_latest_invoices", { limit, posCreditColumn: posCreditColumn || null });
 }
 
-export async function searchInvoices(query) {
-  if (!query.trim()) return getLatestInvoices();
+export async function searchInvoices(query, posCreditColumn = null) {
+  if (!query.trim()) return getLatestInvoices(20, posCreditColumn);
 
   if (!canUseTauri()) {
     const needle = query.toLowerCase();
@@ -164,23 +164,23 @@ export async function searchInvoices(query) {
     );
   }
 
-  return invoke("search_invoice", { query });
+  return invoke("search_invoice", { query, posCreditColumn: posCreditColumn || null });
 }
 
-export async function getInvoice(invoiceNo) {
+export async function getInvoice(invoiceNo, posCreditColumn = null) {
   if (!canUseTauri()) {
     return fallbackInvoices.find((invoice) => invoice.invoiceNo === invoiceNo) ?? null;
   }
 
-  return invoke("get_invoice", { invoiceNo });
+  return invoke("get_invoice", { invoiceNo, posCreditColumn: posCreditColumn || null });
 }
 
-export async function getInvoiceByVchCode(vchCode) {
+export async function getInvoiceByVchCode(vchCode, posCreditColumn = null) {
   if (!canUseTauri()) {
     return fallbackInvoices.find((invoice) => invoice.vchCode === Number(vchCode)) ?? null;
   }
 
-  return invoke("get_invoice_by_vch_code", { vchCode: Number(vchCode) });
+  return invoke("get_invoice_by_vch_code", { vchCode: Number(vchCode), posCreditColumn: posCreditColumn || null });
 }
 
 export async function markInvoicePaid(invoiceNo, transactionId = "") {

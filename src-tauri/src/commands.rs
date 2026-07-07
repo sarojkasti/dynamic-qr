@@ -34,26 +34,27 @@ pub struct WatcherState {
 }
 
 #[tauri::command]
-pub fn get_invoice(db: State<'_, BusyDb>, invoice_no: String) -> Result<Option<Invoice>, ApiError> {
-    db.get_invoice_by_id(invoice_no).map_err(ApiError::from)
+pub fn get_invoice(db: State<'_, BusyDb>, invoice_no: String, pos_credit_column: Option<String>) -> Result<Option<Invoice>, ApiError> {
+    db.get_invoice_by_id(invoice_no, pos_credit_column.as_deref()).map_err(ApiError::from)
 }
 
 #[tauri::command]
 pub fn get_invoice_by_vch_code(
     db: State<'_, BusyDb>,
     vch_code: i32,
+    pos_credit_column: Option<String>,
 ) -> Result<Option<Invoice>, ApiError> {
-    db.get_invoice_by_vch_code(vch_code).map_err(ApiError::from)
+    db.get_invoice_by_vch_code(vch_code, pos_credit_column.as_deref()).map_err(ApiError::from)
 }
 
 #[tauri::command]
-pub fn get_latest_invoices(db: State<'_, BusyDb>, limit: i32) -> Result<Vec<Invoice>, ApiError> {
-    db.get_latest_invoices(limit).map_err(ApiError::from)
+pub fn get_latest_invoices(db: State<'_, BusyDb>, limit: i32, pos_credit_column: Option<String>) -> Result<Vec<Invoice>, ApiError> {
+    db.get_latest_invoices(limit, pos_credit_column.as_deref()).map_err(ApiError::from)
 }
 
 #[tauri::command]
-pub fn search_invoice(db: State<'_, BusyDb>, query: String) -> Result<Vec<Invoice>, ApiError> {
-    db.search_invoice(query).map_err(ApiError::from)
+pub fn search_invoice(db: State<'_, BusyDb>, query: String, pos_credit_column: Option<String>) -> Result<Vec<Invoice>, ApiError> {
+    db.search_invoice(query, pos_credit_column.as_deref()).map_err(ApiError::from)
 }
 
 #[tauri::command]

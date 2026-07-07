@@ -218,14 +218,15 @@ fn load_initial_settings() -> BusySettings {
 }
 
 impl BusyDb {
-    pub fn get_invoice_by_id(&self, invoice_no: String) -> Result<Option<Invoice>, String> {
+    pub fn get_invoice_by_id(&self, invoice_no: String, pos_credit_column: Option<&str>) -> Result<Option<Invoice>, String> {
         let settings = self.settings()?;
         let table = checked_identifier(&settings.invoice_table)?;
         let status_table = checked_identifier(&settings.payment_status_table)?;
         let status_column = checked_column_identifier(&settings.payment_status_column)?;
         let dialect = DbDialect::from_settings(&settings);
-        eprintln!("[DB] get_invoice_by_id: invoice_no={} pos_credit_column={:?} db_type={:?}", invoice_no, settings.pos_credit_column, settings.db_type);
-        let amount = invoice_amount_sql(settings.pos_credit_column.as_deref(), &dialect);
+        let effective_col = pos_credit_column.or(settings.pos_credit_column.as_deref());
+        eprintln!("[DB] get_invoice_by_id: invoice_no={} effective_col={:?} override={:?} settings_col={:?}", invoice_no, effective_col, pos_credit_column, settings.pos_credit_column);
+        let amount = invoice_amount_sql(effective_col, &dialect);
         let amount_value = amount.value_expression;
         let amount_source = amount.source_expression;
         let date_expr = dialect.format_date("t.Date");
@@ -275,13 +276,15 @@ impl BusyDb {
         }
     }
 
-    pub fn get_invoice_by_vch_code(&self, vch_code: i32) -> Result<Option<Invoice>, String> {
+    pub fn get_invoice_by_vch_code(&self, vch_code: i32, pos_credit_column: Option<&str>) -> Result<Option<Invoice>, String> {
         let settings = self.settings()?;
         let table = checked_identifier(&settings.invoice_table)?;
         let status_table = checked_identifier(&settings.payment_status_table)?;
         let status_column = checked_column_identifier(&settings.payment_status_column)?;
         let dialect = DbDialect::from_settings(&settings);
-        let amount = invoice_amount_sql(settings.pos_credit_column.as_deref(), &dialect);
+        let effective_col = pos_credit_column.or(settings.pos_credit_column.as_deref());
+        eprintln!("[DB] get_invoice_by_vch_code: vch_code={} effective_col={:?}", vch_code, effective_col);
+        let amount = invoice_amount_sql(effective_col, &dialect);
         let amount_value = amount.value_expression;
         let amount_source = amount.source_expression;
         let date_expr = dialect.format_date("t.Date");
@@ -328,14 +331,15 @@ impl BusyDb {
         }
     }
 
-    pub fn get_latest_invoices(&self, limit: i32) -> Result<Vec<Invoice>, String> {
+    pub fn get_latest_invoices(&self, limit: i32, pos_credit_column: Option<&str>) -> Result<Vec<Invoice>, String> {
         let settings = self.settings()?;
         let table = checked_identifier(&settings.invoice_table)?;
         let status_table = checked_identifier(&settings.payment_status_table)?;
         let status_column = checked_column_identifier(&settings.payment_status_column)?;
         let dialect = DbDialect::from_settings(&settings);
-        eprintln!("[DB] get_latest_invoices: pos_credit_column={:?} db_type={:?}", settings.pos_credit_column, settings.db_type);
-        let amount = invoice_amount_sql(settings.pos_credit_column.as_deref(), &dialect);
+        let effective_col = pos_credit_column.or(settings.pos_credit_column.as_deref());
+        eprintln!("[DB] get_latest_invoices: effective_col={:?} override={:?} settings_col={:?} db_type={:?}", effective_col, pos_credit_column, settings.pos_credit_column, settings.db_type);
+        let amount = invoice_amount_sql(effective_col, &dialect);
         let amount_value = amount.value_expression;
         let amount_source = amount.source_expression;
         let date_expr = dialect.format_date("t.Date");
@@ -459,7 +463,7 @@ impl BusyDb {
                     .map_err(|e| e.to_string())?;
             }
 
-            return self.get_invoice_by_id(invoice_no);
+            return self.get_invoice_by_id(invoice_no, None);
         }
 
         if let Some(transaction_id) = transaction_id {
@@ -514,16 +518,18 @@ impl BusyDb {
                 .map_err(|error| error.to_string())?;
         }
 
-        self.get_invoice_by_id(invoice_no)
+        self.get_invoice_by_id(invoice_no, None)
     }
 
-    pub fn search_invoice(&self, query: String) -> Result<Vec<Invoice>, String> {
+    pub fn search_invoice(&self, query: String, pos_credit_column: Option<&str>) -> Result<Vec<Invoice>, String> {
         let settings = self.settings()?;
         let table = checked_identifier(&settings.invoice_table)?;
         let status_table = checked_identifier(&settings.payment_status_table)?;
         let status_column = checked_column_identifier(&settings.payment_status_column)?;
         let dialect = DbDialect::from_settings(&settings);
-        let amount = invoice_amount_sql(settings.pos_credit_column.as_deref(), &dialect);
+        let effective_col = pos_credit_column.or(settings.pos_credit_column.as_deref());
+        eprintln!("[DB] search_invoice: effective_col={:?}", effective_col);
+        let amount = invoice_amount_sql(effective_col, &dialect);
         let amount_value = amount.value_expression;
         let amount_source = amount.source_expression;
         let date_expr = dialect.format_date("t.Date");
@@ -657,7 +663,7 @@ impl BusyDb {
             let vch_series_code =
                 read_text(&mut row, 2)?.and_then(|value| value.parse::<i32>().ok());
             let invoice_no = read_text(&mut row, 3)?.unwrap_or_default();
-            let invoice = self.get_invoice_by_vch_code(vch_code)?;
+            let invoice = self.get_invoice_by_vch_code(vch_code, None)?;
 
             events.push(InvoiceWatchEvent {
                 vch_code,
