@@ -514,8 +514,10 @@ async function getInvoiceQrPayload(invoice, shouldGenerate = false) {
 
 async function generateInvoiceQr(invoice, key) {
   const amount = parseFloat(invoice.netAmount ?? "0");
+  const posColumn = state.busySettings?.posCreditColumn?.trim();
 
-  if (!amount || amount <= 0) {
+  // POS column is mandatory — never fall back to net amount
+  if (!posColumn || invoice.amountSource === "Invoice net amount" || !amount || amount <= 0) {
     delete state.qrLoadingKeys[key];
     releaseQrGenerationLock(key);
     render();
@@ -755,6 +757,23 @@ function renderQrStage(invoice) {
   const qrKey = qrPayloadKey(invoice);
   const isQrLoading = Boolean(state.qrLoadingKeys[qrKey]);
   const hasQrPayload = Boolean(state.qrPayloads[qrKey]);
+  const posColumn = state.busySettings?.posCreditColumn?.trim();
+
+  if (!posColumn) {
+    return `
+      <div class="qr-stage">
+        <p class="qr-status">POS Amount Column is required. Set it in Settings → Fonepay or Nepal Pay.</p>
+      </div>
+    `;
+  }
+
+  if (invoice.amountSource === "Invoice net amount") {
+    return `
+      <div class="qr-stage">
+        <p class="qr-status">No POS amount — column <strong>${escapeHtml(posColumn)}</strong> is empty for this invoice. QR not generated.</p>
+      </div>
+    `;
+  }
 
   const providerLabel = state.qrProvider === "nepalpay" ? "Nepal Pay" : "Fonepay";
   const altProvider = state.qrProvider === "nepalpay" ? "fonepay" : "nepalpay";
@@ -911,6 +930,11 @@ function renderFonepaySettingsPanel() {
           POS API URL
           <input name="posApiUrl" type="url" placeholder="https://clientapi.fonepay.com/..." value="${escapeHtml(s?.posApiUrl ?? "")}" />
         </label>
+        <label>
+          POS Amount Column
+          <input name="posCreditColumn" placeholder="CCAmt1" value="${escapeHtml(state.busySettings?.posCreditColumn ?? "")}" />
+          <small style="color:#64748b;font-size:0.8rem;">Column in POSDet table used as the invoice amount (e.g. CCAmt1)</small>
+        </label>
         <button type="submit">Save Fonepay Settings</button>
       </form>
     </div>
@@ -991,6 +1015,11 @@ function renderNepalPaySettingsPanel() {
         <label>
           Public Key Path (PEM file — for WebSocket token encryption)
           <input name="publicKeyPath" placeholder="C:\\keys\\NPI_public.pem" value="${escapeHtml(s?.publicKeyPath ?? "")}" />
+        </label>
+        <label>
+          POS Amount Column
+          <input name="posCreditColumn" placeholder="CCAmt1" value="${escapeHtml(state.busySettings?.posCreditColumn ?? "")}" />
+          <small style="color:#64748b;font-size:0.8rem;">Column in POSDet table used as the invoice amount (e.g. CCAmt1)</small>
         </label>
         <fieldset style="margin-top:1rem;padding:1rem;border:1px solid #ccc;border-radius:4px;">
           <legend>WebSocket Status (STOMP)</legend>
@@ -1184,9 +1213,24 @@ async function handleFonepaySettingsSubmit(form) {
     posApiUrl: form.posApiUrl.value.trim()
   };
 
+  const posCreditColumn = form.posCreditColumn.value.trim();
+  const columnChanged = posCreditColumn !== (state.busySettings?.posCreditColumn ?? "");
+
   try {
     const saved = await saveFonepaySettings(settings);
     state.fonepaySettings = saved;
+
+    if (state.busySettingsConfigured) {
+      const updatedBusy = { ...state.busySettings, posCreditColumn: posCreditColumn || null };
+      const busyState = await saveBusySettings(updatedBusy);
+      state.busySettings = busyState.settings;
+
+      // Reload invoices so amounts reflect the new POS column immediately
+      if (columnChanged) {
+        await refreshInvoiceAmounts();
+      }
+    }
+
     state.successMessage = "Fonepay settings saved.";
     state.error = "";
   } catch (error) {
@@ -1219,9 +1263,24 @@ async function handleNepalPaySettingsSubmit(form) {
     wsApiToken: form.wsApiToken.value
   };
 
+  const posCreditColumn = form.posCreditColumn.value.trim();
+  const columnChanged = posCreditColumn !== (state.busySettings?.posCreditColumn ?? "");
+
   try {
     const saved = await saveNepalPaySettings(settings);
     state.nepalPaySettings = saved;
+
+    if (state.busySettingsConfigured) {
+      const updatedBusy = { ...state.busySettings, posCreditColumn: posCreditColumn || null };
+      const busyState = await saveBusySettings(updatedBusy);
+      state.busySettings = busyState.settings;
+
+      // Reload invoices so amounts reflect the new POS column immediately
+      if (columnChanged) {
+        await refreshInvoiceAmounts();
+      }
+    }
+
     state.successMessage = "Nepal Pay settings saved.";
     state.error = "";
   } catch (error) {
@@ -1229,6 +1288,30 @@ async function handleNepalPaySettingsSubmit(form) {
   }
 
   render();
+}
+
+async function refreshInvoiceAmounts() {
+  try {
+    if (state.launchInvoiceNo) {
+      const invoice = await getInvoice(state.launchInvoiceNo);
+      if (invoice) {
+        state.invoices = state.invoices.map((item) =>
+          item.invoiceNo === invoice.invoiceNo ? invoice : item
+        );
+      }
+    } else if (state.query) {
+      const results = await searchInvoices(state.query);
+      state.invoices = results;
+    } else {
+      const latest = await getLatestInvoices(20);
+      state.invoices = latest;
+    }
+    // Clear cached QR payloads so they regenerate with fresh amounts
+    state.qrPayloads = {};
+    saveQrPayloads({});
+  } catch {
+    // Non-critical — amounts will update on next invoice load
+  }
 }
 
 function loadQrProvider() {
