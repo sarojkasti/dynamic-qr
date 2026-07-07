@@ -77,16 +77,15 @@ boot();
 
 async function boot() {
   try {
-    window.addEventListener("storage", handleStorageChange);
-
     if (state.popupMode) {
       const invoiceNo = params.get("invoice") || params.get("invoiceNo") || params.get("vchNo");
       const vchCode = params.get("vchCode");
-      // Each popup window is pinned to one provider via URL param
+      // Each popup is pinned to one provider via URL param — never touch localStorage
       const urlProvider = params.get("provider");
       if (urlProvider === "fonepay" || urlProvider === "nepalpay") {
         state.qrProvider = urlProvider;
-        saveQrProvider(urlProvider);
+        // Do NOT call saveQrProvider here: localStorage is shared between windows,
+        // so saving would clobber the other popup's provider via the storage event.
       }
       // Load settings so popup knows credentials and POS column
       const [settingsState, fonepaySettings, nepalPaySettings] = await Promise.all([
@@ -102,12 +101,23 @@ async function boot() {
       state.nepalPaySettings = nepalPaySettings;
       await loadPopupInvoice(invoiceNo, vchCode);
       await listenToInvoicePopupUpdate(async (payload) => {
+        // Refresh this provider's settings — they may have changed since the popup opened
+        if (state.qrProvider === "nepalpay") {
+          const fresh = await getNepalPaySettings().catch(() => null);
+          if (fresh) state.nepalPaySettings = fresh;
+        } else {
+          const fresh = await getFonepaySettings().catch(() => null);
+          if (fresh) state.fonepaySettings = fresh;
+        }
         await loadPopupInvoice(payload.invoiceNo, payload.vchCode);
         render();
       });
       render();
       return;
     }
+
+    // Storage event only needed in the main window (popups have a fixed provider from URL)
+    window.addEventListener("storage", handleStorageChange);
 
     const [summary, settingsState, launchInvoiceNo, watchLatest, fonepaySettings, nepalPaySettings] = await Promise.all([
       getConnectionSummary(),
@@ -1381,11 +1391,19 @@ async function refreshInvoiceAmounts() {
 }
 
 function activePosCreditColumn() {
-  const col = (state.qrProvider === "nepalpay"
+  // Try active provider first, fall back to the other provider so the watcher
+  // and main window list always get a real column (not null) when possible
+  const primary = (state.qrProvider === "nepalpay"
     ? state.nepalPaySettings?.posCreditColumn
     : state.fonepaySettings?.posCreditColumn
   )?.trim();
-  return col || null;
+  if (primary) return primary;
+
+  const secondary = (state.qrProvider === "nepalpay"
+    ? state.fonepaySettings?.posCreditColumn
+    : state.nepalPaySettings?.posCreditColumn
+  )?.trim();
+  return secondary || null;
 }
 
 function loadQrProvider() {
