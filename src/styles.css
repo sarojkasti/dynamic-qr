@@ -309,6 +309,24 @@ label {
   background: #ffffff;
 }
 
+.badge-ok {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #15803d;
+  background: #dcfce7;
+  padding: 2px 10px;
+  border-radius: 12px;
+}
+
+.badge-empty {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #92400e;
+  background: #fef3c7;
+  padding: 2px 10px;
+  border-radius: 12px;
+}
+
 .qr-provider-bar {
   display: flex;
   align-items: center;

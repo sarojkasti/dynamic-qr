@@ -20,7 +20,6 @@ import {
   listenToBusyInvoiceWatchError,
   markInvoicePaid,
   openInvoicePopup,
-  saveBankMerchant,
   saveBusySettings,
   searchInvoices,
   startBusyInvoiceWatcher,
@@ -29,7 +28,6 @@ import {
 } from "./api";
 import "./styles.css";
 
-const BANKS_STORAGE_KEY = "busypay-qr.banks.v1";
 const QR_PAYLOADS_STORAGE_KEY = "busypay-qr.qr-payloads.v1";
 const QR_GENERATION_LOCK_STORAGE_KEY = "busypay-qr.qr-generation-locks.v1";
 const PAYMENT_UPDATE_STORAGE_KEY = "busypay-qr.payment-update.v1";
@@ -66,12 +64,10 @@ const state = {
   qrPayloads: loadQrPayloads(),
   qrLoadingKeys: {},
   qrAutoGenerateKey: "",
-  banks: loadBanks(),
-  editingBankKey: "",
+  fonepaySettings: null,
+  nepalPaySettings: null,
   notificationsEnabled: loadNotificationPreference(),
   qrProvider: loadQrProvider(),
-  showNepalPaySettings: false,
-  nepalPaySettings: null,
   error: "",
   confirmPaidInvoiceNo: "",
   successMessage: ""
@@ -95,14 +91,16 @@ async function boot() {
       return;
     }
 
-    const [summary, settingsState, launchInvoiceNo, watchLatest, nepalPaySettings] = await Promise.all([
+    const [summary, settingsState, launchInvoiceNo, watchLatest, fonepaySettings, nepalPaySettings] = await Promise.all([
       getConnectionSummary(),
       getBusySettings(),
       getLaunchInvoiceNo(),
       getLaunchWatchLatest(),
+      getFonepaySettings().catch(() => null),
       getNepalPaySettings().catch(() => null)
     ]);
 
+    state.fonepaySettings = fonepaySettings;
     state.nepalPaySettings = nepalPaySettings;
     state.connectionSummary = summary;
     state.busySettings = settingsState.settings;
@@ -328,48 +326,6 @@ async function loadPopupInvoice(invoiceNo, vchCode) {
   }
 }
 
-async function handleBankSubmit(form) {
-  const bank = {
-    name: form.name.value.trim(),
-    bankType: form.bankType.value.trim(),
-    merchantCode: form.merchantCode.value.trim(),
-    merchantUsername: form.merchantUsername.value.trim(),
-    merchantPassword: form.merchantPassword.value,
-    merchantSecretKey: form.merchantSecretKey.value.trim(),
-    fonepayDynamicUrl: form.fonepayDynamicUrl?.value.trim() || "",
-    fonepayPosApiUrl: form.fonepayPosApiUrl?.value.trim() || "",
-    fonepayIntegrationMode: form.fonepayIntegrationMode?.value.trim() || "",
-    posCreditColumn: form.posCreditColumn?.value.trim() || ""
-  };
-
-  try {
-    const savedBank = await saveBankMerchant(bank);
-    const bankSummary = await publicBankSummary(savedBank);
-    const existingKey = state.editingBankKey || bankIdentityKey(bankSummary);
-    const existingIndex = state.banks.findIndex((item) =>
-      bankIdentityKey(item) === existingKey ||
-      (bankSummary.merchantCodeHash && item.merchantCodeHash === bankSummary.merchantCodeHash)
-    );
-
-    if (existingIndex >= 0) {
-      state.banks = state.banks.map((item, index) => (index === existingIndex ? bankSummary : item));
-      state.successMessage = "Fonepay settings updated.";
-    } else {
-      state.banks = [bankSummary, ...state.banks];
-      state.successMessage = "Fonepay settings saved.";
-    }
-
-    localStorage.setItem(BANKS_STORAGE_KEY, JSON.stringify(state.banks));
-    state.editingBankKey = "";
-    form.reset();
-    state.error = "";
-  } catch (error) {
-    state.error = errorMessage(error);
-  }
-
-  render();
-}
-
 async function handleBusySettingsSubmit(form) {
   const settings = {
     connectionString: form.connectionString.value.trim(),
@@ -409,9 +365,12 @@ async function handleBusySettingsSubmit(form) {
 
 async function openBusySettings() {
   state.showBusySettings = true;
-  try {
-    state.nepalPaySettings = await getNepalPaySettings();
-  } catch { /* keep existing */ }
+  const [fp, np] = await Promise.all([
+    getFonepaySettings().catch(() => null),
+    getNepalPaySettings().catch(() => null)
+  ]);
+  if (fp) state.fonepaySettings = fp;
+  if (np) state.nepalPaySettings = np;
   render();
 }
 
@@ -719,8 +678,9 @@ function render() {
           </div>
           <div class="metrics">
             <div><strong>${state.invoices.length}</strong><span>Invoices</span></div>
-            <div><strong>${state.banks.length}</strong><span>Banks</span></div>
-              <div><strong>${state.notificationsEnabled ? "On" : "Off"}</strong><span>Notifications</span></div>
+            <div><strong>${state.fonepaySettings?.merchantCode ? "✓" : "—"}</strong><span>Fonepay</span></div>
+            <div><strong>${state.nepalPaySettings?.merchantId ? "✓" : "—"}</strong><span>NepalPay</span></div>
+            <div><strong>${state.notificationsEnabled ? "On" : "Off"}</strong><span>Alerts</span></div>
             <button id="openBusySettings" class="secondary-button" type="button">Settings</button>
           </div>
         </header>
@@ -909,103 +869,63 @@ function renderInvoiceDetails(invoice) {
   `;
 }
 
-function renderBankPanel() {
-  const editingBank = state.banks.find((bank) => bankIdentityKey(bank) === state.editingBankKey);
+function renderFonepaySettingsPanel() {
+  const s = state.fonepaySettings;
+  const isConfigured = Boolean(s?.merchantCode);
 
   return `
     <div class="panel bank-panel">
       <div class="panel-heading">
-        <h3>${state.editingBankKey ? "Edit bank" : "Create new bank"}</h3>
-        <span>${state.editingBankKey ? "Editing" : `${state.banks.length} saved`}</span>
+        <h3>Fonepay Settings</h3>
+        <span class="${isConfigured ? "badge-ok" : "badge-empty"}">${isConfigured ? "Configured" : "Not set"}</span>
       </div>
-
-      <form id="bankForm" class="bank-form">
+      <form id="fonepaySettingsForm" class="bank-form">
         <label>
-          Name
-          <input name="name" placeholder="Bank name" value="${escapeHtml(editingBank?.name ?? "")}" required />
+          Merchant Code
+          <input name="merchantCode" placeholder="MER-001" value="${escapeHtml(s?.merchantCode ?? "")}" required />
         </label>
         <label>
-          Type
-          <input name="bankType" placeholder="Bank, wallet, gateway" value="${escapeHtml(editingBank?.bankType ?? "")}" required />
+          Merchant Secret
+          <input name="merchantSecret" type="password" placeholder="Secret key" value="${escapeHtml(s?.merchantSecret ?? "")}" required />
         </label>
         <label>
-          Merchant code
-          <input name="merchantCode" placeholder="MER-001" required />
+          Username
+          <input name="username" placeholder="merchant_user" value="${escapeHtml(s?.username ?? "")}" required />
         </label>
         <label>
-          Merchant username
-          <input name="merchantUsername" placeholder="merchant_user" value="${escapeHtml(editingBank?.merchantUsername ?? "")}" required />
+          Password
+          <input name="password" type="password" placeholder="Password" value="${escapeHtml(s?.password ?? "")}" required />
         </label>
         <label>
-          Merchant password
-          <input name="merchantPassword" type="password" placeholder="Password" required />
+          Integration Mode
+          <select name="integrationMode">
+            <option value="dynamic_api" ${(s?.integrationMode ?? "dynamic_api") === "dynamic_api" ? "selected" : ""}>Dynamic API</option>
+            <option value="pos_api" ${s?.integrationMode === "pos_api" ? "selected" : ""}>POS API</option>
+          </select>
         </label>
         <label>
-          Merchant secret key
-          <input name="merchantSecretKey" type="password" placeholder="Secret key" required />
+          Dynamic QR URL
+          <input name="dynamicUrl" type="url" placeholder="https://merchantapi.fonepay.com/..." value="${escapeHtml(s?.dynamicUrl ?? "")}" />
         </label>
-        
-        <fieldset style="margin-top: 1rem; padding: 1rem; border: 1px solid #ccc; border-radius: 4px;">
-          <legend>Fonepay Settings (Optional)</legend>
-          <label>
-            Dynamic URL
-            <input name="fonepayDynamicUrl" type="url" placeholder="https://merchantapi.fonepay.com/..." value="${escapeHtml(editingBank?.fonepayDynamicUrl ?? "")}" />
-          </label>
-          <label>
-            POS API URL
-            <input name="fonepayPosApiUrl" type="url" placeholder="https://clientapi.fonepay.com/..." value="${escapeHtml(editingBank?.fonepayPosApiUrl ?? "")}" />
-          </label>
-          <label>
-            Integration Mode
-            <select name="fonepayIntegrationMode">
-              <option value="">-- Select Mode --</option>
-              <option value="dynamic_api" ${editingBank?.fonepayIntegrationMode === "dynamic_api" ? "selected" : ""}>Dynamic API</option>
-              <option value="pos_api" ${editingBank?.fonepayIntegrationMode === "pos_api" ? "selected" : ""}>POS API</option>
-            </select>
-          </label>
-          <label>
-            POS credit column
-            <input name="posCreditColumn" placeholder="CCAmt1" value="${escapeHtml(editingBank?.posCreditColumn ?? "")}" />
-          </label>
-        </fieldset>
-        
-        <button type="submit">${state.editingBankKey ? "Update bank" : "Save bank"}</button>
-        ${state.editingBankKey ? `<button id="cancelBankEdit" class="secondary-button" type="button">Cancel edit</button>` : ""}
+        <label>
+          POS API URL
+          <input name="posApiUrl" type="url" placeholder="https://clientapi.fonepay.com/..." value="${escapeHtml(s?.posApiUrl ?? "")}" />
+        </label>
+        <button type="submit">Save Fonepay Settings</button>
       </form>
-
-      <div class="bank-list" aria-label="Saved banks">
-        ${state.banks.length ? state.banks.map((bank) => `
-          <article class="bank-item">
-            <div>
-              <strong>${escapeHtml(bank.name)}</strong>
-              <span>${escapeHtml(bank.bankType)}</span>
-            </div>
-            <dl>
-              <div><dt>Code hash</dt><dd>${escapeHtml(bank.merchantCodeHash ?? "Needs update")}</dd></div>
-              <div><dt>Username</dt><dd>${escapeHtml(bank.merchantUsername)}</dd></div>
-              <div><dt>Password</dt><dd>********</dd></div>
-              <div><dt>Secret hash</dt><dd>${escapeHtml(bank.merchantSecretHash ?? "********")}</dd></div>
-              ${bank.fonepayDynamicUrl ? `<div><dt>Fonepay Dynamic URL</dt><dd>${escapeHtml(bank.fonepayDynamicUrl)}</dd></div>` : ""}
-              ${bank.fonepayPosApiUrl ? `<div><dt>Fonepay POS API URL</dt><dd>${escapeHtml(bank.fonepayPosApiUrl)}</dd></div>` : ""}
-              ${bank.fonepayIntegrationMode ? `<div><dt>Fonepay Integration Mode</dt><dd>${escapeHtml(bank.fonepayIntegrationMode)}</dd></div>` : ""}
-              ${bank.posCreditColumn ? `<div><dt>POS credit column</dt><dd>${escapeHtml(bank.posCreditColumn)}</dd></div>` : ""}
-            </dl>
-            <button class="secondary-button" type="button" data-edit-bank="${escapeHtml(bankIdentityKey(bank))}">Edit</button>
-          </article>
-        `).join("") : `<p class="muted">No banks saved yet.</p>`}
-      </div>
     </div>
   `;
 }
 
 function renderNepalPaySettingsPanel() {
   const s = state.nepalPaySettings;
+  const isConfigured = Boolean(s?.merchantId);
 
   return `
     <div class="panel bank-panel">
       <div class="panel-heading">
         <h3>Nepal Pay (NPI) Settings</h3>
-        <span>NCHL QR</span>
+        <span class="${isConfigured ? "badge-ok" : "badge-empty"}">${isConfigured ? "Configured" : "Not set"}</span>
       </div>
       <form id="nepalPaySettingsForm" class="bank-form">
         <label>
@@ -1160,7 +1080,7 @@ function renderBusySettingsModal() {
 
       <hr />
 
-      ${renderBankPanel()}
+      ${renderFonepaySettingsPanel()}
 
       <hr />
 
@@ -1201,19 +1121,9 @@ function bindEvents() {
     if (invoice) copyQrPayload(invoice);
   });
 
-  document.querySelector("#bankForm")?.addEventListener("submit", (event) => {
+  document.querySelector("#fonepaySettingsForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    handleBankSubmit(event.currentTarget);
-  });
-  document.querySelectorAll("[data-edit-bank]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.editingBankKey = button.dataset.editBank;
-      render();
-    });
-  });
-  document.querySelector("#cancelBankEdit")?.addEventListener("click", () => {
-    state.editingBankKey = "";
-    render();
+    await handleFonepaySettingsSubmit(event.currentTarget);
   });
 
   document.querySelector("#busySettingsForm")?.addEventListener("submit", (event) => {
@@ -1261,6 +1171,29 @@ function bindEvents() {
     event.preventDefault();
     await handleNepalPaySettingsSubmit(event.currentTarget);
   });
+}
+
+async function handleFonepaySettingsSubmit(form) {
+  const settings = {
+    merchantCode: form.merchantCode.value.trim(),
+    merchantSecret: form.merchantSecret.value,
+    username: form.username.value.trim(),
+    password: form.password.value,
+    integrationMode: form.integrationMode.value,
+    dynamicUrl: form.dynamicUrl.value.trim(),
+    posApiUrl: form.posApiUrl.value.trim()
+  };
+
+  try {
+    const saved = await saveFonepaySettings(settings);
+    state.fonepaySettings = saved;
+    state.successMessage = "Fonepay settings saved.";
+    state.error = "";
+  } catch (error) {
+    state.error = errorMessage(error);
+  }
+
+  render();
 }
 
 async function handleNepalPaySettingsSubmit(form) {
@@ -1454,25 +1387,6 @@ function stompParse(raw) {
   }
   const body = bodyStart >= 0 ? lines.slice(bodyStart).join("\n").trim() : "";
   return { command, headers, body };
-}
-
-function loadBanks() {
-  try {
-    const banks = JSON.parse(localStorage.getItem(BANKS_STORAGE_KEY)) ?? [];
-    let changed = false;
-    const sanitizedBanks = banks.map(({ merchantCode, merchantSecretKey, merchantPassword, ...bank }) => {
-      changed = changed || Boolean(merchantCode || merchantSecretKey || merchantPassword);
-      return bank;
-    });
-
-    if (changed) {
-      localStorage.setItem(BANKS_STORAGE_KEY, JSON.stringify(sanitizedBanks));
-    }
-
-    return sanitizedBanks;
-  } catch {
-    return [];
-  }
 }
 
 function loadQrPayloads() {
@@ -1801,39 +1715,6 @@ function notifyFonepayPaymentOutcome(outcome, invoiceNo, detail = "") {
   } catch {
     // Ignore notification failures in environments that partially support the API.
   }
-}
-
-function bankIdentityKey(bank) {
-  return `${String(bank?.name ?? "").trim().toLowerCase()}|${String(bank?.bankType ?? "").trim().toLowerCase()}`;
-}
-
-async function publicBankSummary(bank) {
-  return {
-    name: bank.name,
-    bankType: bank.bankType,
-    merchantCodeHash: await sha256Fingerprint(bank.merchantCode),
-    merchantSecretHash: await sha256Fingerprint(bank.merchantSecretKey),
-    merchantUsername: bank.merchantUsername,
-    fonepayDynamicUrl: bank.fonepayDynamicUrl ?? "",
-    fonepayPosApiUrl: bank.fonepayPosApiUrl ?? "",
-    fonepayIntegrationMode: bank.fonepayIntegrationMode ?? "",
-    posCreditColumn: bank.posCreditColumn ?? ""
-  };
-}
-
-async function sha256Fingerprint(value) {
-  const trimmed = String(value ?? "").trim();
-  if (!trimmed) return "";
-
-  if (!globalThis.crypto?.subtle) {
-    throw new Error("Secure hashing is not available in this browser.");
-  }
-
-  const bytes = new TextEncoder().encode(trimmed);
-  const hash = await globalThis.crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(hash))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
 }
 
 function errorMessage(error) {

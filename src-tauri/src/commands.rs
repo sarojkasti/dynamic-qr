@@ -705,6 +705,16 @@ async fn verify_fonepay_third_party_qr(
 }
 
 #[tauri::command]
+pub fn delete_fonepay_settings() -> Result<(), ApiError> {
+    crate::db::clear_fonepay_settings().map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub fn delete_nepalpay_settings() -> Result<(), ApiError> {
+    crate::db::clear_nepalpay_settings().map_err(ApiError::from)
+}
+
+#[tauri::command]
 pub fn get_nepalpay_settings() -> Result<NepalPaySettings, ApiError> {
     crate::db::read_nepalpay_settings().map_err(ApiError::from)
 }

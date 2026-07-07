@@ -1134,6 +1134,24 @@ pub fn write_nepalpay_settings(
     Ok(settings.clone())
 }
 
+pub fn clear_fonepay_settings() -> Result<(), String> {
+    let path = fonepay_settings_file_path()?;
+    if path.exists() {
+        fs::remove_file(&path)
+            .map_err(|error| format!("Could not delete Fonepay settings: {error}"))?;
+    }
+    Ok(())
+}
+
+pub fn clear_nepalpay_settings() -> Result<(), String> {
+    let path = nepalpay_settings_file_path()?;
+    if path.exists() {
+        fs::remove_file(&path)
+            .map_err(|error| format!("Could not delete Nepal Pay settings: {error}"))?;
+    }
+    Ok(())
+}
+
 fn nepalpay_settings_file_path() -> Result<PathBuf, String> {
     if let Ok(appdata) = env::var("APPDATA") {
         return Ok(PathBuf::from(appdata)
