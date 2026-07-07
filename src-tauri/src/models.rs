@@ -87,6 +87,8 @@ pub struct FonepaySettings {
     pub username: String,
     pub password: String,
     pub integration_mode: String,
+    #[serde(default)]
+    pub pos_credit_column: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,6 +157,8 @@ pub struct NepalPaySettings {
     pub transaction_currency: i32,
     pub store_label: String,
     pub user_id: String,
+    #[serde(default)]
+    pub pos_credit_column: String,
     pub ws_url: String,
     pub ws_username: String,
     /// Plain api_token — stored encrypted, decrypted before use

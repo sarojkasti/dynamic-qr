@@ -522,7 +522,12 @@ async function getInvoiceQrPayload(invoice, shouldGenerate = false) {
 
 async function generateInvoiceQr(invoice, key) {
   const amount = parseFloat(invoice.netAmount ?? "0");
-  const posColumn = state.busySettings?.posCreditColumn?.trim();
+  const posColumn = (state.qrProvider === "nepalpay"
+    ? state.nepalPaySettings?.posCreditColumn
+    : state.fonepaySettings?.posCreditColumn
+  )?.trim() || state.busySettings?.posCreditColumn?.trim();
+
+  state.error = ""; // Clear any stale error from a previous provider
 
   console.log("[QR] generateInvoiceQr", {
     invoiceNo: invoice.invoiceNo,
@@ -811,7 +816,10 @@ function renderQrStage(invoice) {
   const qrKey = qrPayloadKey(invoice);
   const isQrLoading = Boolean(state.qrLoadingKeys[qrKey]);
   const hasQrPayload = Boolean(state.qrPayloads[qrKey]);
-  const posColumn = state.busySettings?.posCreditColumn?.trim();
+  const posColumn = (state.qrProvider === "nepalpay"
+    ? state.nepalPaySettings?.posCreditColumn
+    : state.fonepaySettings?.posCreditColumn
+  )?.trim() || state.busySettings?.posCreditColumn?.trim();
 
   if (!posColumn) {
     return `
@@ -990,7 +998,7 @@ function renderFonepaySettingsPanel() {
         </label>
         <label>
           POS Amount Column
-          <input name="posCreditColumn" placeholder="CCAmt1" value="${escapeHtml(state.busySettings?.posCreditColumn ?? "")}" />
+          <input name="posCreditColumn" placeholder="CCAmt1" value="${escapeHtml(s?.posCreditColumn ?? "")}" />
           <small style="color:#64748b;font-size:0.8rem;">Column in POSDet table used as the invoice amount (e.g. CCAmt1)</small>
         </label>
         <button type="submit">Save Fonepay Settings</button>
@@ -1056,7 +1064,7 @@ function renderNepalPaySettingsPanel() {
         </label>
         <label>
           POS Amount Column
-          <input name="posCreditColumn" placeholder="CCAmt1" value="${escapeHtml(state.busySettings?.posCreditColumn ?? "")}" />
+          <input name="posCreditColumn" placeholder="CCAmt1" value="${escapeHtml(s?.posCreditColumn ?? "")}" />
           <small style="color:#64748b;font-size:0.8rem;">Column in POSDet table used as the invoice amount (e.g. CCAmt1)</small>
         </label>
         <fieldset style="margin-top:1rem;padding:1rem;border:1px solid #ccc;border-radius:4px;">
@@ -1212,12 +1220,14 @@ function bindEvents() {
     const newProvider = event.currentTarget.dataset.provider;
     state.qrProvider = newProvider;
     saveQrProvider(newProvider);
-    // Clear cached QR so it regenerates with the new provider
+    state.error = "";
     const currentInvoice = selectedInvoice();
     if (currentInvoice) {
       const key = qrPayloadKey(currentInvoice);
+      closeNepalPayStompSocket(key);
       delete state.qrPayloads[key];
       saveQrPayloads(state.qrPayloads);
+      releaseQrGenerationLock(key);
       state.qrAutoGenerateKey = key;
     }
     render();
@@ -1241,6 +1251,9 @@ function bindEvents() {
 }
 
 async function handleFonepaySettingsSubmit(form) {
+  const posCreditColumn = form.posCreditColumn.value.trim();
+  const columnChanged = posCreditColumn !== (state.fonepaySettings?.posCreditColumn ?? "");
+
   const settings = {
     merchantCode: form.merchantCode.value.trim(),
     merchantSecret: form.merchantSecret.value,
@@ -1248,25 +1261,16 @@ async function handleFonepaySettingsSubmit(form) {
     password: form.password.value,
     integrationMode: form.integrationMode.value,
     dynamicUrl: form.dynamicUrl.value.trim(),
-    posApiUrl: form.posApiUrl.value.trim()
+    posApiUrl: form.posApiUrl.value.trim(),
+    posCreditColumn
   };
-
-  const posCreditColumn = form.posCreditColumn.value.trim();
-  const columnChanged = posCreditColumn !== (state.busySettings?.posCreditColumn ?? "");
 
   try {
     const saved = await saveFonepaySettings(settings);
     state.fonepaySettings = saved;
 
-    if (state.busySettingsConfigured) {
-      const updatedBusy = { ...state.busySettings, posCreditColumn: posCreditColumn || null };
-      const busyState = await saveBusySettings(updatedBusy);
-      state.busySettings = busyState.settings;
-
-      // Reload invoices so amounts reflect the new POS column immediately
-      if (columnChanged) {
-        await refreshInvoiceAmounts();
-      }
+    if (state.busySettingsConfigured && columnChanged && state.qrProvider === "fonepay") {
+      await refreshInvoiceAmounts();
     }
 
     state.successMessage = "Fonepay settings saved.";
@@ -1279,6 +1283,9 @@ async function handleFonepaySettingsSubmit(form) {
 }
 
 async function handleNepalPaySettingsSubmit(form) {
+  const posCreditColumn = form.posCreditColumn.value.trim();
+  const columnChanged = posCreditColumn !== (state.nepalPaySettings?.posCreditColumn ?? "");
+
   const settings = {
     apiUrl: form.apiUrl.value.trim(),
     acquirerId: form.acquirerId.value.trim(),
@@ -1291,27 +1298,18 @@ async function handleNepalPaySettingsSubmit(form) {
     transactionCurrency: Number.parseInt(form.transactionCurrency.value, 10),
     storeLabel: form.storeLabel.value.trim(),
     userId: form.userId.value.trim(),
+    posCreditColumn,
     wsUrl: form.wsUrl.value.trim(),
     wsUsername: form.wsUsername.value.trim(),
     wsApiToken: form.wsApiToken.value
   };
 
-  const posCreditColumn = form.posCreditColumn.value.trim();
-  const columnChanged = posCreditColumn !== (state.busySettings?.posCreditColumn ?? "");
-
   try {
     const saved = await saveNepalPaySettings(settings);
     state.nepalPaySettings = saved;
 
-    if (state.busySettingsConfigured) {
-      const updatedBusy = { ...state.busySettings, posCreditColumn: posCreditColumn || null };
-      const busyState = await saveBusySettings(updatedBusy);
-      state.busySettings = busyState.settings;
-
-      // Reload invoices so amounts reflect the new POS column immediately
-      if (columnChanged) {
-        await refreshInvoiceAmounts();
-      }
+    if (state.busySettingsConfigured && columnChanged && state.qrProvider === "nepalpay") {
+      await refreshInvoiceAmounts();
     }
 
     state.successMessage = "Nepal Pay settings saved.";

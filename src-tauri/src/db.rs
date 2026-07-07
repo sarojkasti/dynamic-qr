@@ -1011,6 +1011,7 @@ pub fn read_fonepay_settings() -> Result<crate::models::FonepaySettings, String>
             username: String::new(),
             password: String::new(),
             integration_mode: String::new(),
+            pos_credit_column: String::new(),
         });
     }
 
@@ -1076,6 +1077,7 @@ pub fn read_nepalpay_settings() -> Result<crate::models::NepalPaySettings, Strin
             transaction_currency: 524,
             store_label: String::new(),
             user_id: String::new(),
+            pos_credit_column: String::new(),
             ws_url: String::new(),
             ws_username: String::new(),
             ws_api_token: String::new(),

@@ -88,6 +88,7 @@ pub fn save_bank_merchant(
             username: bank.merchant_username.clone(),
             password: bank.merchant_password.clone(),
             integration_mode: bank.fonepay_integration_mode.clone(),
+            pos_credit_column: bank.pos_credit_column.clone(),
         };
         let _ = crate::db::write_fonepay_settings(&fonepay_settings);
     }
@@ -119,7 +120,10 @@ pub async fn generate_fonepay_dynamic_qr(
 ) -> Result<DynamicQrResponse, ApiError> {
     load_app_dotenv();
 
-    if fonepay_mode() == "dynamic_api" {
+    let mode = fonepay_mode();
+    eprintln!("[Fonepay] generate_dynamic_qr: mode={mode} txn={} amount={}", request.transaction_id, request.amount);
+
+    if mode == "dynamic_api" {
         return generate_fonepay_third_party_dynamic_qr(request).await;
     }
 
@@ -209,6 +213,8 @@ async fn generate_fonepay_third_party_dynamic_qr(
     let data_validation = hmac_sha512_hex(merchant_secret.as_bytes(), data_to_hash.as_bytes());
     let endpoint = fonepay_third_party_endpoint(&dynamic_qr_url, "thirdPartyDynamicQrDownload");
 
+    eprintln!("[Fonepay] third-party QR: url={endpoint} merchant={merchant_code} username={username} amount={amount} prn={prn}");
+
     let payload = serde_json::json!({
         "amount": amount,
         "prn": prn,
@@ -227,8 +233,12 @@ async fn generate_fonepay_third_party_dynamic_qr(
         .json(&payload)
         .send()
         .await
-        .map_err(|error| ApiError::from(format!("Failed to call Fonepay: {error}")))?;
+        .map_err(|error| {
+            eprintln!("[Fonepay] third-party request failed: {error}");
+            ApiError::from(format!("Failed to call Fonepay: {error}"))
+        })?;
     let status = response.status();
+    eprintln!("[Fonepay] third-party response: HTTP {status}");
     let content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -385,6 +395,8 @@ async fn generate_fonepay_pos_dynamic_qr(
     let data_to_hash = format!("{merchant_code},{amount},{transaction_id},{return_url},{remarks}");
     let data_validation = hmac_sha512_hex(merchant_secret.as_bytes(), data_to_hash.as_bytes());
 
+    eprintln!("[Fonepay] POS QR: url={api_url} merchant={merchant_code} amount={amount} txn={transaction_id}");
+
     let payload = serde_json::json!({
         "pid": merchant_code,
         "amt": amount,
@@ -401,8 +413,12 @@ async fn generate_fonepay_pos_dynamic_qr(
         .json(&payload)
         .send()
         .await
-        .map_err(|error| ApiError::from(format!("Failed to call Fonepay: {error}")))?;
+        .map_err(|error| {
+            eprintln!("[Fonepay] POS request failed: {error}");
+            ApiError::from(format!("Failed to call Fonepay: {error}"))
+        })?;
     let status = response.status();
+    eprintln!("[Fonepay] POS response: HTTP {status}");
     let content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -749,6 +765,9 @@ pub async fn generate_nepalpay_dynamic_qr(
         return Err(ApiError::from("Nepal Pay user ID is not configured"));
     }
     let amount = format_amount(request.transaction_amount.trim())?;
+
+    eprintln!("[NepalPay] generate_dynamic_qr: url={} acquirerId={} merchantId={} amount={} bill={}",
+        settings.api_url.trim(), settings.acquirer_id.trim(), settings.merchant_id.trim(), amount, request.bill_number.trim());
     let bill_number = request.bill_number.trim().to_string();
 
     let api_url = settings.api_url.trim().trim_end_matches('/').to_string();
@@ -777,13 +796,18 @@ pub async fn generate_nepalpay_dynamic_qr(
         .json(&payload)
         .send()
         .await
-        .map_err(|error| ApiError::from(format!("Failed to call Nepal Pay: {error}")))?;
+        .map_err(|error| {
+            eprintln!("[NepalPay] request failed: {error}");
+            ApiError::from(format!("Failed to call Nepal Pay: {error}"))
+        })?;
 
     let status = response.status();
     let body = response
         .text()
         .await
         .map_err(|error| ApiError::from(format!("Failed to read Nepal Pay response: {error}")))?;
+
+    eprintln!("[NepalPay] response: HTTP {status} body={}", &body[..body.len().min(300)]);
 
     if !status.is_success() {
         return Err(ApiError::from(format!("Nepal Pay returned {status}: {body}")));
