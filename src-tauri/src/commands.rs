@@ -812,10 +812,18 @@ pub async fn generate_nepalpay_dynamic_qr(
     });
 
 
+    // Basic Auth: base64(username:api_token)
+    let basic_auth = base64_encode(
+        format!("{}:{}", settings.ws_username.trim(), settings.ws_api_token.trim()).as_bytes()
+    );
+
+    eprintln!("[NepalPay] using Basic Auth username={}", settings.ws_username.trim());
+
     let response = reqwest::Client::new()
         .post(&api_url)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .header(reqwest::header::ACCEPT, "application/json")
+        .header(reqwest::header::AUTHORIZATION, format!("Basic {basic_auth}"))
         .json(&payload)
         .send()
         .await

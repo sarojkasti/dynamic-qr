@@ -613,8 +613,8 @@ async function generateFonepayInvoiceQr(invoice) {
   const response = await generateFonepayDynamicQr({
     transactionId: invoice.invoiceNo,
     amount: String(invoice.netAmount),
-    remarks1: String(invoice.partyName ?? invoice.invoiceNo).slice(0, 100),
-    remarks2: String(invoice.invoiceDateNepali ?? invoice.invoiceDate ?? "N/A").slice(0, 50),
+    remarks1: `Newmew-${invoice.invoiceNo}`.slice(0, 100),
+    remarks2: `Newmew-${invoice.invoiceNo}`.slice(0, 50),
     paymentDate: formatFonepayDate(new Date())
   });
 
