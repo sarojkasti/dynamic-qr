@@ -1061,6 +1061,103 @@ pub fn write_fonepay_settings(
     Ok(settings.clone())
 }
 
+pub fn read_nepalpay_settings() -> Result<crate::models::NepalPaySettings, String> {
+    let path = nepalpay_settings_file_path()?;
+    if !path.exists() {
+        return Ok(crate::models::NepalPaySettings {
+            api_url: String::new(),
+            acquirer_id: String::new(),
+            merchant_id: String::new(),
+            merchant_name: String::new(),
+            merchant_category_code: 0,
+            merchant_country: "NP".to_string(),
+            merchant_city: String::new(),
+            merchant_postal_code: String::new(),
+            merchant_language: "en".to_string(),
+            transaction_currency: 524,
+            store_label: String::new(),
+            terminal_label: String::new(),
+            purpose_of_transaction: String::new(),
+            user_id: String::new(),
+            private_key_path: String::new(),
+            public_key_path: String::new(),
+            ws_url: String::new(),
+            ws_username: String::new(),
+            ws_api_token: String::new(),
+        });
+    }
+
+    let content = fs::read_to_string(&path).map_err(|error| {
+        format!(
+            "Could not read Nepal Pay settings from {}: {error}",
+            path.display()
+        )
+    })?;
+    let mut settings: crate::models::NepalPaySettings =
+        serde_json::from_str(&content).map_err(|error| {
+            format!(
+                "Could not parse Nepal Pay settings from {}: {error}",
+                path.display()
+            )
+        })?;
+
+    decrypt_nepalpay_settings(&mut settings)?;
+    Ok(settings)
+}
+
+pub fn write_nepalpay_settings(
+    settings: &crate::models::NepalPaySettings,
+) -> Result<crate::models::NepalPaySettings, String> {
+    let path = nepalpay_settings_file_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Could not create Nepal Pay settings folder {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+
+    let mut stored_settings = settings.clone();
+    encrypt_nepalpay_settings(&mut stored_settings)?;
+
+    let content = serde_json::to_string_pretty(&stored_settings)
+        .map_err(|error| format!("Could not serialize Nepal Pay settings: {error}"))?;
+
+    fs::write(&path, content).map_err(|error| {
+        format!(
+            "Could not save Nepal Pay settings to {}: {error}",
+            path.display()
+        )
+    })?;
+
+    Ok(settings.clone())
+}
+
+fn nepalpay_settings_file_path() -> Result<PathBuf, String> {
+    if let Ok(appdata) = env::var("APPDATA") {
+        return Ok(PathBuf::from(appdata)
+            .join("BusyPay QR")
+            .join("nepalpay-settings.json"));
+    }
+
+    Ok(env::current_dir()
+        .map_err(|error| error.to_string())?
+        .join("nepalpay-settings.json"))
+}
+
+fn encrypt_nepalpay_settings(settings: &mut crate::models::NepalPaySettings) -> Result<(), String> {
+    settings.user_id = protect_secret(&settings.user_id)?;
+    settings.ws_api_token = protect_secret(&settings.ws_api_token)?;
+    Ok(())
+}
+
+fn decrypt_nepalpay_settings(settings: &mut crate::models::NepalPaySettings) -> Result<(), String> {
+    settings.user_id = unprotect_secret(&settings.user_id)?;
+    settings.ws_api_token = unprotect_secret(&settings.ws_api_token)?;
+    Ok(())
+}
+
 fn fonepay_settings_file_path() -> Result<PathBuf, String> {
     if let Ok(appdata) = env::var("APPDATA") {
         return Ok(PathBuf::from(appdata)

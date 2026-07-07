@@ -309,6 +309,24 @@ label {
   background: #ffffff;
 }
 
+.qr-provider-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  justify-content: space-between;
+}
+
+.qr-provider-active {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #0f6fd1;
+  background: #e8f0fe;
+  padding: 3px 10px;
+  border-radius: 12px;
+  letter-spacing: 0.03em;
+}
+
 #qrCanvas {
   width: min(100%, 280px);
   height: auto;

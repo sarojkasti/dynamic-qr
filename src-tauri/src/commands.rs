@@ -1,5 +1,5 @@
 use std::{
-    env,
+    env, fs,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -15,12 +15,18 @@ use crate::{
     db::BusyDb,
     models::{
         ApiError, BankMerchant, BusySettings, BusySettingsState, DynamicQrRequest,
-        DynamicQrResponse, FonepaySettings, Invoice, PaymentQrStatusRequest,
-        PaymentQrStatusResponse,
+        DynamicQrResponse, FonepaySettings, Invoice, NepalPayQrRequest, NepalPayQrResponse,
+        NepalPaySettings, PaymentQrStatusRequest, PaymentQrStatusResponse,
     },
 };
 
-use sha2::{Digest, Sha512};
+use rsa::{
+    pkcs1v15::SigningKey,
+    pkcs8::{DecodePrivateKey, DecodePublicKey},
+    signature::{Signer, SignatureEncoding},
+    Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey,
+};
+use sha2::{Digest, Sha256, Sha512};
 
 #[derive(Default)]
 pub struct WatcherState {
@@ -696,6 +702,210 @@ async fn verify_fonepay_third_party_qr(
         .unwrap_or_else(|_| serde_json::json!({ "response": body }));
 
     Ok(PaymentQrStatusResponse { raw })
+}
+
+#[tauri::command]
+pub fn get_nepalpay_settings() -> Result<NepalPaySettings, ApiError> {
+    crate::db::read_nepalpay_settings().map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub fn save_nepalpay_settings(settings: NepalPaySettings) -> Result<NepalPaySettings, ApiError> {
+    crate::db::write_nepalpay_settings(&settings).map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn generate_nepalpay_dynamic_qr(
+    request: NepalPayQrRequest,
+) -> Result<NepalPayQrResponse, ApiError> {
+    load_app_dotenv();
+
+    if request.bill_number.trim().is_empty() {
+        return Err(ApiError::from("Bill number is required"));
+    }
+
+    if request.transaction_amount.trim().is_empty() {
+        return Err(ApiError::from("Transaction amount is required"));
+    }
+
+    validate_amount(request.transaction_amount.trim())?;
+
+    let settings = crate::db::read_nepalpay_settings().map_err(ApiError::from)?;
+
+    if settings.api_url.trim().is_empty() {
+        return Err(ApiError::from("Nepal Pay API URL is not configured"));
+    }
+    if settings.acquirer_id.trim().is_empty() {
+        return Err(ApiError::from("Nepal Pay acquirer ID is not configured"));
+    }
+    if settings.merchant_id.trim().is_empty() {
+        return Err(ApiError::from("Nepal Pay merchant ID is not configured"));
+    }
+    if settings.user_id.trim().is_empty() {
+        return Err(ApiError::from("Nepal Pay user ID is not configured"));
+    }
+    if settings.private_key_path.trim().is_empty() {
+        return Err(ApiError::from("Nepal Pay private key path is not configured"));
+    }
+
+    let amount = format_amount(request.transaction_amount.trim())?;
+    let bill_number = request.bill_number.trim().to_string();
+
+    // Build token string per NPI spec:
+    // acquirerId + ", " + merchantId + ", " + merchantCategoryCode + ", " +
+    // transactionCurrency + ", " + transactionAmount + ", " + billNumber + ", " + userId
+    let token_string = format!(
+        "{}, {}, {}, {}, {}, {}, {}",
+        settings.acquirer_id.trim(),
+        settings.merchant_id.trim(),
+        settings.merchant_category_code,
+        settings.transaction_currency,
+        amount,
+        bill_number,
+        settings.user_id.trim()
+    );
+
+    let token = nepalpay_sign_token(&token_string, &settings.private_key_path)?;
+
+    // Encrypt WebSocket api_token with RSA public key if configured
+    let ws_encrypted_api_token = if !settings.public_key_path.trim().is_empty()
+        && !settings.ws_api_token.trim().is_empty()
+    {
+        Some(nepalpay_encrypt_ws_token(
+            &settings.ws_api_token,
+            &settings.public_key_path,
+        )?)
+    } else {
+        None
+    };
+
+    let api_url = settings.api_url.trim().trim_end_matches('/').to_string();
+
+    let payload = serde_json::json!({
+        "pointOfInitialization": 12,
+        "acquirerId": settings.acquirer_id.trim(),
+        "merchantId": settings.merchant_id.trim(),
+        "merchantName": settings.merchant_name.trim(),
+        "merchantCategoryCode": settings.merchant_category_code,
+        "merchantCountry": settings.merchant_country.trim(),
+        "merchantCity": settings.merchant_city.trim(),
+        "merchantPostalCode": settings.merchant_postal_code.trim(),
+        "merchantLanguage": settings.merchant_language.trim(),
+        "transactionCurrency": settings.transaction_currency,
+        "transactionAmount": amount,
+        "valueOfConvenienceFeeFixed": "0.00",
+        "billNumber": bill_number,
+        "referenceLabel": request.reference_label,
+        "mobileNo": request.mobile_no,
+        "storeLabel": settings.store_label.trim(),
+        "terminalLabel": settings.terminal_label.trim(),
+        "purposeOfTransaction": settings.purpose_of_transaction.trim(),
+        "additionalConsumerDataRequest": null,
+        "loyaltyNumber": null,
+        "qrImage": false,
+        "token": token
+    });
+
+    let response = reqwest::Client::new()
+        .post(&api_url)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header(reqwest::header::ACCEPT, "application/json")
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|error| ApiError::from(format!("Failed to call Nepal Pay: {error}")))?;
+
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| ApiError::from(format!("Failed to read Nepal Pay response: {error}")))?;
+
+    if !status.is_success() {
+        return Err(ApiError::from(format!("Nepal Pay returned {status}: {body}")));
+    }
+
+    let raw = serde_json::from_str::<serde_json::Value>(&body)
+        .unwrap_or_else(|_| serde_json::json!({ "response": body }));
+
+    let response_code = raw
+        .get("responseCode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let response_status = raw
+        .get("responseStatus")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_ascii_uppercase())
+        .unwrap_or_default();
+
+    if response_code != "000" && response_status != "SUCCESS" {
+        let message = raw
+            .get("responseMessage")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Nepal Pay QR generation failed");
+        return Err(ApiError::from(message));
+    }
+
+    let data = raw.get("data");
+    let qr_string = data
+        .and_then(|d| d.get("qrString"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let validation_trace_id = data
+        .and_then(|d| d.get("validationTraceId"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+
+    if qr_string.is_none() {
+        return Err(ApiError::from(
+            "Nepal Pay response did not include a QR string",
+        ));
+    }
+
+    Ok(NepalPayQrResponse {
+        qr_string,
+        validation_trace_id,
+        ws_encrypted_api_token,
+        raw,
+    })
+}
+
+fn nepalpay_sign_token(token_string: &str, private_key_path: &str) -> Result<String, ApiError> {
+    let pem = fs::read_to_string(private_key_path).map_err(|error| {
+        ApiError::from(format!(
+            "Could not read Nepal Pay private key from {private_key_path}: {error}"
+        ))
+    })?;
+
+    let private_key = RsaPrivateKey::from_pkcs8_pem(pem.trim()).map_err(|error| {
+        ApiError::from(format!("Invalid Nepal Pay private key (expected PKCS#8 PEM): {error}"))
+    })?;
+
+    let signing_key = SigningKey::<Sha256>::new(private_key);
+    let signature: rsa::pkcs1v15::Signature = signing_key.sign(token_string.as_bytes());
+    Ok(base64_encode(signature.to_bytes().as_ref()))
+}
+
+fn nepalpay_encrypt_ws_token(
+    plain_token: &str,
+    public_key_path: &str,
+) -> Result<String, ApiError> {
+    let pem = fs::read_to_string(public_key_path).map_err(|error| {
+        ApiError::from(format!(
+            "Could not read Nepal Pay public key from {public_key_path}: {error}"
+        ))
+    })?;
+
+    let public_key = RsaPublicKey::from_public_key_pem(pem.trim()).map_err(|error| {
+        ApiError::from(format!("Invalid Nepal Pay public key (expected PKCS#8 PEM): {error}"))
+    })?;
+
+    let mut rng = rand::thread_rng();
+    let encrypted = public_key
+        .encrypt(&mut rng, Pkcs1v15Encrypt, plain_token.as_bytes())
+        .map_err(|error| ApiError::from(format!("Failed to encrypt Nepal Pay api_token: {error}")))?;
+
+    Ok(base64_encode(&encrypted))
 }
 
 #[tauri::command]

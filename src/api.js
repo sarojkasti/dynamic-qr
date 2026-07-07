@@ -217,6 +217,48 @@ export async function verifyFonepayPaymentQr(prn, amount = "") {
   return invoke("verify_fonepay_payment_qr", { request: { prn, amount } });
 }
 
+export async function getNepalPaySettings() {
+  if (!canUseTauri()) return {
+    apiUrl: "",
+    acquirerId: "",
+    merchantId: "",
+    merchantName: "",
+    merchantCategoryCode: 0,
+    merchantCountry: "NP",
+    merchantCity: "",
+    merchantPostalCode: "",
+    merchantLanguage: "en",
+    transactionCurrency: 524,
+    storeLabel: "",
+    terminalLabel: "",
+    purposeOfTransaction: "",
+    userId: "",
+    privateKeyPath: "",
+    publicKeyPath: "",
+    wsUrl: "",
+    wsUsername: "",
+    wsApiToken: ""
+  };
+  return invoke("get_nepalpay_settings");
+}
+
+export async function saveNepalPaySettings(settings) {
+  if (!canUseTauri()) return settings;
+  return invoke("save_nepalpay_settings", { settings });
+}
+
+export async function generateNepalPayDynamicQr(request) {
+  if (!canUseTauri()) {
+    return {
+      qrString: request.billNumber,
+      validationTraceId: `PREVIEW-${request.billNumber}`,
+      wsEncryptedApiToken: null,
+      raw: { preview: true }
+    };
+  }
+  return invoke("generate_nepalpay_dynamic_qr", { request });
+}
+
 export async function startBusyInvoiceWatcher() {
   if (!canUseTauri()) return;
   return invoke("start_busy_invoice_watcher");

@@ -9,9 +9,12 @@ import {
   getLaunchWatchLatest,
   getLatestInvoices,
   generateFonepayDynamicQr,
+  generateNepalPayDynamicQr,
   closeAppWindow,
   getFonepaySettings,
   saveFonepaySettings,
+  getNepalPaySettings,
+  saveNepalPaySettings,
   listenToInvoicePopupUpdate,
   listenToBusyInvoiceCreated,
   listenToBusyInvoiceWatchError,
@@ -31,10 +34,12 @@ const QR_PAYLOADS_STORAGE_KEY = "busypay-qr.qr-payloads.v1";
 const QR_GENERATION_LOCK_STORAGE_KEY = "busypay-qr.qr-generation-locks.v1";
 const PAYMENT_UPDATE_STORAGE_KEY = "busypay-qr.payment-update.v1";
 const NOTIFICATIONS_ENABLED_STORAGE_KEY = "busypay-qr.notifications-enabled.v1";
+const QR_PROVIDER_STORAGE_KEY = "busypay-qr.qr-provider.v1";
 const qrBaseUrl = "https://qr.yourdomain.com/invoice";
 const params = new URLSearchParams(window.location.search);
 const isPopupWindow = params.get("popup") === "1";
 const qrPaymentSockets = new Map();
+const nepalPayStompSockets = new Map();
 
 const state = {
   popupMode: isPopupWindow,
@@ -64,6 +69,9 @@ const state = {
   banks: loadBanks(),
   editingBankKey: "",
   notificationsEnabled: loadNotificationPreference(),
+  qrProvider: loadQrProvider(),
+  showNepalPaySettings: false,
+  nepalPaySettings: null,
   error: "",
   confirmPaidInvoiceNo: "",
   successMessage: ""
@@ -87,13 +95,15 @@ async function boot() {
       return;
     }
 
-    const [summary, settingsState, launchInvoiceNo, watchLatest] = await Promise.all([
+    const [summary, settingsState, launchInvoiceNo, watchLatest, nepalPaySettings] = await Promise.all([
       getConnectionSummary(),
       getBusySettings(),
       getLaunchInvoiceNo(),
-      getLaunchWatchLatest()
+      getLaunchWatchLatest(),
+      getNepalPaySettings().catch(() => null)
     ]);
 
+    state.nepalPaySettings = nepalPaySettings;
     state.connectionSummary = summary;
     state.busySettings = settingsState.settings;
     state.busySettingsConfigured = settingsState.isConfigured;
@@ -397,8 +407,11 @@ async function handleBusySettingsSubmit(form) {
   render();
 }
 
-function openBusySettings() {
+async function openBusySettings() {
   state.showBusySettings = true;
+  try {
+    state.nepalPaySettings = await getNepalPaySettings();
+  } catch { /* keep existing */ }
   render();
 }
 
@@ -497,7 +510,11 @@ async function drawQr(invoice) {
   const payload = await getInvoiceQrPayload(invoice, shouldGenerate);
 
   if (payload) {
-    ensureFonepayPaymentSocket(invoice, payload);
+    if (payload.provider === "nepalpay") {
+      ensureNepalPayStompSocket(invoice, payload);
+    } else {
+      ensureFonepayPaymentSocket(invoice, payload);
+    }
   }
 
   if (payload?.imageDataUrl) {
@@ -547,15 +564,15 @@ async function generateInvoiceQr(invoice, key) {
   }
 
   try {
-    const response = await generateFonepayDynamicQr({
-      transactionId: invoice.invoiceNo,
-      amount: String(invoice.netAmount),
-      remarks1: String(invoice.partyName ?? invoice.invoiceNo).slice(0, 100),
-      remarks2: String(invoice.invoiceDateNepali ?? invoice.invoiceDate ?? "N/A").slice(0, 50),
-      paymentDate: formatFonepayDate(new Date())
-    });
+    let payload;
 
-    state.qrPayloads[key] = await persistQrSnapshot(response);
+    if (state.qrProvider === "nepalpay") {
+      payload = await generateNepalPayInvoiceQr(invoice);
+    } else {
+      payload = await generateFonepayInvoiceQr(invoice);
+    }
+
+    state.qrPayloads[key] = await persistQrSnapshot(payload);
     saveQrPayloads(state.qrPayloads);
     state.error = "";
   } catch (error) {
@@ -567,6 +584,44 @@ async function generateInvoiceQr(invoice, key) {
     releaseQrGenerationLock(key);
     render();
   }
+}
+
+async function generateFonepayInvoiceQr(invoice) {
+  const response = await generateFonepayDynamicQr({
+    transactionId: invoice.invoiceNo,
+    amount: String(invoice.netAmount),
+    remarks1: String(invoice.partyName ?? invoice.invoiceNo).slice(0, 100),
+    remarks2: String(invoice.invoiceDateNepali ?? invoice.invoiceDate ?? "N/A").slice(0, 50),
+    paymentDate: formatFonepayDate(new Date())
+  });
+
+  return {
+    qrText: response.qrText,
+    imageDataUrl: response.imageDataUrl,
+    remarks1: response.remarks1,
+    raw: response.raw,
+    thirdpartyQrWebSocketUrl: response.raw?.thirdpartyQrWebSocketUrl ?? response.raw?.thirdPartyQrWebSocketUrl ?? null,
+    provider: "fonepay"
+  };
+}
+
+async function generateNepalPayInvoiceQr(invoice) {
+  const response = await generateNepalPayDynamicQr({
+    billNumber: invoice.invoiceNo,
+    transactionAmount: String(invoice.netAmount),
+    referenceLabel: null,
+    mobileNo: null
+  });
+
+  return {
+    qrText: response.qrString ?? null,
+    imageDataUrl: null,
+    remarks1: invoice.invoiceNo,
+    raw: response.raw,
+    validationTraceId: response.validationTraceId ?? null,
+    wsEncryptedApiToken: response.wsEncryptedApiToken ?? null,
+    provider: "nepalpay"
+  };
 }
 
 function drawImageOnCanvas(canvas, imageDataUrl) {
@@ -741,15 +796,26 @@ function renderQrStage(invoice) {
   const isQrLoading = Boolean(state.qrLoadingKeys[qrKey]);
   const hasQrPayload = Boolean(state.qrPayloads[qrKey]);
 
+  const providerLabel = state.qrProvider === "nepalpay" ? "Nepal Pay" : "Fonepay";
+  const altProvider = state.qrProvider === "nepalpay" ? "fonepay" : "nepalpay";
+  const altLabel = altProvider === "nepalpay" ? "Nepal Pay" : "Fonepay";
+
   return `
     <div class="qr-stage">
+      <div class="qr-provider-bar">
+        <span class="qr-provider-active">${escapeHtml(providerLabel)}</span>
+        <button id="switchQrProvider" class="secondary-button" type="button" data-provider="${escapeHtml(altProvider)}">
+          Switch to ${escapeHtml(altLabel)}
+        </button>
+      </div>
       <canvas id="qrCanvas" width="280" height="280"></canvas>
-      ${isQrLoading ? `<p class="qr-status">Generating Fonepay QR...</p>` : ""}
-      ${hasQrPayload && !isQrLoading ? `<p class="qr-status success">QR already generated for invoice ${escapeHtml(invoice.invoiceNo)}</p>` : ""}
+      ${isQrLoading ? `<p class="qr-status">Generating ${escapeHtml(providerLabel)} QR…</p>` : ""}
+      ${hasQrPayload && !isQrLoading ? `<p class="qr-status success">QR ready for invoice ${escapeHtml(invoice.invoiceNo)}</p>` : ""}
       <div class="qr-actions">
-        <button id="verifyPayment" class="secondary-button" type="button">Verify Payment</button>
+        ${state.qrProvider === "fonepay" ? `<button id="verifyPayment" class="secondary-button" type="button">Verify Payment</button>` : ""}
         <button id="downloadQr" type="button" ${hasQrPayload ? "" : "disabled"}>Download PNG</button>
         <button id="copyQrUrl" type="button" ${hasQrPayload ? "" : "disabled"}>Copy QR</button>
+        <button id="regenerateQr" class="secondary-button" type="button">New QR</button>
       </div>
     </div>
   `;
@@ -932,6 +998,101 @@ function renderBankPanel() {
   `;
 }
 
+function renderNepalPaySettingsPanel() {
+  const s = state.nepalPaySettings;
+
+  return `
+    <div class="panel bank-panel">
+      <div class="panel-heading">
+        <h3>Nepal Pay (NPI) Settings</h3>
+        <span>NCHL QR</span>
+      </div>
+      <form id="nepalPaySettingsForm" class="bank-form">
+        <label>
+          API URL
+          <input name="apiUrl" type="url" placeholder="https://qr.npi.com.np/api/..." value="${escapeHtml(s?.apiUrl ?? "")}" required />
+        </label>
+        <label>
+          Acquirer ID
+          <input name="acquirerId" placeholder="00001701" value="${escapeHtml(s?.acquirerId ?? "")}" required />
+        </label>
+        <label>
+          Merchant ID
+          <input name="merchantId" placeholder="17012UVSTIR" value="${escapeHtml(s?.merchantId ?? "")}" required />
+        </label>
+        <label>
+          Merchant Name
+          <input name="merchantName" placeholder="BBSM" value="${escapeHtml(s?.merchantName ?? "")}" required />
+        </label>
+        <label>
+          Merchant Category Code (MCC)
+          <input name="merchantCategoryCode" type="number" placeholder="5021" value="${escapeHtml(s?.merchantCategoryCode ?? "0")}" required />
+        </label>
+        <label>
+          Merchant Country
+          <input name="merchantCountry" placeholder="NP" value="${escapeHtml(s?.merchantCountry ?? "NP")}" required />
+        </label>
+        <label>
+          Merchant City
+          <input name="merchantCity" placeholder="Kathmandu" value="${escapeHtml(s?.merchantCity ?? "")}" required />
+        </label>
+        <label>
+          Merchant Postal Code
+          <input name="merchantPostalCode" placeholder="44600" value="${escapeHtml(s?.merchantPostalCode ?? "")}" required />
+        </label>
+        <label>
+          Merchant Language
+          <input name="merchantLanguage" placeholder="en" value="${escapeHtml(s?.merchantLanguage ?? "en")}" required />
+        </label>
+        <label>
+          Transaction Currency (numeric ISO 4217)
+          <input name="transactionCurrency" type="number" placeholder="524" value="${escapeHtml(s?.transactionCurrency ?? "524")}" required />
+        </label>
+        <label>
+          Store Label
+          <input name="storeLabel" placeholder="1524525335" value="${escapeHtml(s?.storeLabel ?? "")}" />
+        </label>
+        <label>
+          Terminal Label
+          <input name="terminalLabel" placeholder="Terminal1" value="${escapeHtml(s?.terminalLabel ?? "")}" />
+        </label>
+        <label>
+          Purpose of Transaction
+          <input name="purposeOfTransaction" placeholder="Bill payment" value="${escapeHtml(s?.purposeOfTransaction ?? "")}" />
+        </label>
+        <label>
+          NPI User ID
+          <input name="userId" placeholder="npi_user" value="${escapeHtml(s?.userId ?? "")}" required />
+        </label>
+        <label>
+          Private Key Path (PEM file — PKCS#8 format)
+          <input name="privateKeyPath" placeholder="C:\\keys\\NPI_private.pem" value="${escapeHtml(s?.privateKeyPath ?? "")}" required />
+        </label>
+        <label>
+          Public Key Path (PEM file — for WebSocket token encryption)
+          <input name="publicKeyPath" placeholder="C:\\keys\\NPI_public.pem" value="${escapeHtml(s?.publicKeyPath ?? "")}" />
+        </label>
+        <fieldset style="margin-top:1rem;padding:1rem;border:1px solid #ccc;border-radius:4px;">
+          <legend>WebSocket Status (STOMP)</legend>
+          <label>
+            WebSocket URL
+            <input name="wsUrl" type="url" placeholder="wss://qr.npi.com.np/nqrws" value="${escapeHtml(s?.wsUrl ?? "")}" />
+          </label>
+          <label>
+            WS Username
+            <input name="wsUsername" placeholder="username" value="${escapeHtml(s?.wsUsername ?? "")}" />
+          </label>
+          <label>
+            WS API Token (plain — encrypted on save)
+            <input name="wsApiToken" type="password" placeholder="API token from NPI" value="${escapeHtml(s?.wsApiToken ?? "")}" />
+          </label>
+        </fieldset>
+        <button type="submit">Save Nepal Pay Settings</button>
+      </form>
+    </div>
+  `;
+}
+
 function renderBusySettingsModal() {
   if (!state.showBusySettings) return "";
 
@@ -1000,6 +1161,10 @@ function renderBusySettingsModal() {
       <hr />
 
       ${renderBankPanel()}
+
+      <hr />
+
+      ${renderNepalPaySettingsPanel()}
       </section>
     </div>
   `;
@@ -1065,6 +1230,230 @@ function bindEvents() {
     handleMarkPaid(invoiceToPay);
   });
   document.querySelector("#closeSuccess")?.addEventListener("click", closeSuccessPopup);
+
+  document.querySelector("#switchQrProvider")?.addEventListener("click", (event) => {
+    const newProvider = event.currentTarget.dataset.provider;
+    state.qrProvider = newProvider;
+    saveQrProvider(newProvider);
+    // Clear cached QR so it regenerates with the new provider
+    const currentInvoice = selectedInvoice();
+    if (currentInvoice) {
+      const key = qrPayloadKey(currentInvoice);
+      delete state.qrPayloads[key];
+      saveQrPayloads(state.qrPayloads);
+      state.qrAutoGenerateKey = key;
+    }
+    render();
+  });
+
+  document.querySelector("#regenerateQr")?.addEventListener("click", () => {
+    const currentInvoice = selectedInvoice();
+    if (!currentInvoice) return;
+    const key = qrPayloadKey(currentInvoice);
+    delete state.qrPayloads[key];
+    saveQrPayloads(state.qrPayloads);
+    releaseQrGenerationLock(key);
+    state.qrAutoGenerateKey = key;
+    render();
+  });
+
+  document.querySelector("#nepalPaySettingsForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await handleNepalPaySettingsSubmit(event.currentTarget);
+  });
+}
+
+async function handleNepalPaySettingsSubmit(form) {
+  const settings = {
+    apiUrl: form.apiUrl.value.trim(),
+    acquirerId: form.acquirerId.value.trim(),
+    merchantId: form.merchantId.value.trim(),
+    merchantName: form.merchantName.value.trim(),
+    merchantCategoryCode: Number.parseInt(form.merchantCategoryCode.value, 10),
+    merchantCountry: form.merchantCountry.value.trim(),
+    merchantCity: form.merchantCity.value.trim(),
+    merchantPostalCode: form.merchantPostalCode.value.trim(),
+    merchantLanguage: form.merchantLanguage.value.trim(),
+    transactionCurrency: Number.parseInt(form.transactionCurrency.value, 10),
+    storeLabel: form.storeLabel.value.trim(),
+    terminalLabel: form.terminalLabel.value.trim(),
+    purposeOfTransaction: form.purposeOfTransaction.value.trim(),
+    userId: form.userId.value.trim(),
+    privateKeyPath: form.privateKeyPath.value.trim(),
+    publicKeyPath: form.publicKeyPath.value.trim(),
+    wsUrl: form.wsUrl.value.trim(),
+    wsUsername: form.wsUsername.value.trim(),
+    wsApiToken: form.wsApiToken.value
+  };
+
+  try {
+    const saved = await saveNepalPaySettings(settings);
+    state.nepalPaySettings = saved;
+    state.successMessage = "Nepal Pay settings saved.";
+    state.error = "";
+  } catch (error) {
+    state.error = errorMessage(error);
+  }
+
+  render();
+}
+
+function loadQrProvider() {
+  try {
+    return localStorage.getItem(QR_PROVIDER_STORAGE_KEY) || "fonepay";
+  } catch {
+    return "fonepay";
+  }
+}
+
+function saveQrProvider(provider) {
+  try {
+    localStorage.setItem(QR_PROVIDER_STORAGE_KEY, provider);
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Nepal Pay STOMP-over-WebSocket status tracking
+// ---------------------------------------------------------------------------
+
+function ensureNepalPayStompSocket(invoice, payload) {
+  const key = qrPayloadKey(invoice);
+  const wsUrl = state.nepalPaySettings?.wsUrl ?? "";
+
+  if (!key || !wsUrl || isInvoicePaid(invoice)) return;
+  if (!payload.validationTraceId) return;
+
+  const existing = nepalPayStompSockets.get(key);
+  if (existing?.socket && existing.socket.readyState <= WebSocket.OPEN) return;
+
+  if (existing?.socket) {
+    try { existing.socket.close(); } catch { /* ignore */ }
+  }
+
+  const socket = new WebSocket(wsUrl);
+  nepalPayStompSockets.set(key, { socket, handled: false });
+
+  socket.onopen = () => {
+    // Send STOMP CONNECT frame
+    stompSend(socket, "CONNECT", { "accept-version": "1.2", "heart-beat": "0,0" }, "");
+  };
+
+  socket.onmessage = async (event) => {
+    const frame = stompParse(event.data);
+    if (!frame) return;
+
+    if (frame.command === "CONNECTED") {
+      // Subscribe to status endpoint
+      stompSend(socket, "SUBSCRIBE", {
+        id: "sub-0",
+        destination: "/user/nqrws/check-txn-status"
+      }, "");
+
+      // Send transaction detail request
+      const body = JSON.stringify({
+        merchant_id: payload.terminalLabel ?? state.nepalPaySettings?.terminalLabel ?? "",
+        request_id: payload.validationTraceId,
+        username: state.nepalPaySettings?.wsUsername ?? "",
+        api_token: payload.wsEncryptedApiToken ?? ""
+      });
+      stompSend(socket, "SEND", { destination: "/nqrws/check-txn-status", "content-type": "application/json" }, body);
+      return;
+    }
+
+    if (frame.command !== "MESSAGE") return;
+
+    const current = nepalPayStompSockets.get(key);
+    if (!current || current.handled) return;
+
+    const message = parseJsonMaybe(frame.body);
+    if (!message) return;
+
+    const status = String(message.status ?? "").toUpperCase();
+    const debitStatus = String(message.debit_status ?? "");
+
+    if (status === "COMPLETED" && debitStatus === "000") {
+      current.handled = true;
+      const txnId = message.txn_id ?? payload.validationTraceId ?? "";
+
+      try {
+        const updatedInvoice = await markInvoicePaid(invoice.invoiceNo, txnId);
+
+        if (updatedInvoice) {
+          state.invoices = state.invoices.map((item) =>
+            invoiceKey(item) === invoiceKey(updatedInvoice) ? updatedInvoice : item
+          );
+          state.successMessage = `Nepal Pay payment received. Invoice ${updatedInvoice.invoiceNo} marked as Paid.`;
+          state.error = "";
+          localStorage.setItem(
+            PAYMENT_UPDATE_STORAGE_KEY,
+            JSON.stringify({ invoiceNo: updatedInvoice.invoiceNo, status: "Paid", at: Date.now() })
+          );
+          notifyFonepayPaymentOutcome("success", invoice.invoiceNo, `TXN ${txnId}`);
+        }
+      } catch (error) {
+        state.error = errorMessage(error);
+      } finally {
+        closeNepalPayStompSocket(key);
+        if (state.popupMode) { await closeAppWindow(); return; }
+        render();
+      }
+      return;
+    }
+
+    if (status === "FAILED") {
+      current.handled = true;
+      notifyFonepayPaymentOutcome("failure", invoice.invoiceNo, message.message ?? "Failed");
+      closeNepalPayStompSocket(key);
+      render();
+    }
+  };
+
+  socket.onerror = () => {
+    state.error = `Nepal Pay: unable to connect to payment WebSocket for invoice ${invoice.invoiceNo}.`;
+    render();
+  };
+
+  socket.onclose = () => {
+    const current = nepalPayStompSockets.get(key);
+    if (current?.socket === socket) nepalPayStompSockets.delete(key);
+  };
+}
+
+function closeNepalPayStompSocket(key) {
+  const entry = nepalPayStompSockets.get(key);
+  if (!entry?.socket) return;
+  try { entry.socket.close(); } catch { /* ignore */ }
+  nepalPayStompSockets.delete(key);
+}
+
+function stompSend(socket, command, headers, body) {
+  let frame = `${command}\n`;
+  for (const [k, v] of Object.entries(headers)) {
+    frame += `${k}:${v}\n`;
+  }
+  frame += `\n${body}\0`;
+  socket.send(frame);
+}
+
+function stompParse(raw) {
+  if (typeof raw !== "string") return null;
+  const nullIndex = raw.indexOf("\0");
+  const content = nullIndex >= 0 ? raw.slice(0, nullIndex) : raw;
+  const lines = content.split("\n");
+  const command = lines[0]?.trim();
+  if (!command) return null;
+
+  const headers = {};
+  let bodyStart = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === "") { bodyStart = i + 1; break; }
+    const colon = lines[i].indexOf(":");
+    if (colon > 0) headers[lines[i].slice(0, colon)] = lines[i].slice(colon + 1);
+  }
+  const body = bodyStart >= 0 ? lines.slice(bodyStart).join("\n").trim() : "";
+  return { command, headers, body };
 }
 
 function loadBanks() {

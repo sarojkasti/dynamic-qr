@@ -140,3 +140,50 @@ impl From<&str> for ApiError {
         }
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NepalPaySettings {
+    pub api_url: String,
+    pub acquirer_id: String,
+    pub merchant_id: String,
+    pub merchant_name: String,
+    pub merchant_category_code: i32,
+    pub merchant_country: String,
+    pub merchant_city: String,
+    pub merchant_postal_code: String,
+    pub merchant_language: String,
+    pub transaction_currency: i32,
+    pub store_label: String,
+    pub terminal_label: String,
+    pub purpose_of_transaction: String,
+    /// NPI-provided userId used in token string
+    pub user_id: String,
+    /// Absolute path to RSA private key PEM file (for token signing)
+    pub private_key_path: String,
+    /// Absolute path to RSA public key PEM file (for ws api_token encryption)
+    pub public_key_path: String,
+    pub ws_url: String,
+    pub ws_username: String,
+    /// Plain api_token — stored encrypted, decrypted before use
+    pub ws_api_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NepalPayQrRequest {
+    pub bill_number: String,
+    pub transaction_amount: String,
+    pub reference_label: Option<String>,
+    pub mobile_no: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NepalPayQrResponse {
+    pub qr_string: Option<String>,
+    pub validation_trace_id: Option<String>,
+    /// RSA-encrypted api_token ready for WebSocket STOMP request
+    pub ws_encrypted_api_token: Option<String>,
+    pub raw: serde_json::Value,
+}
