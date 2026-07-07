@@ -20,7 +20,13 @@ use crate::{
     },
 };
 
-use sha2::{Digest, Sha512};
+use rsa::{
+    pkcs1v15::SigningKey,
+    pkcs8::DecodePrivateKey,
+    signature::{Signer, SignatureEncoding},
+    RsaPrivateKey,
+};
+use sha2::{Digest, Sha256, Sha512};
 
 #[derive(Default)]
 pub struct WatcherState {
@@ -764,11 +770,27 @@ pub async fn generate_nepalpay_dynamic_qr(
     if settings.user_id.trim().is_empty() {
         return Err(ApiError::from("Nepal Pay user ID is not configured"));
     }
+    if settings.private_key_path.trim().is_empty() {
+        return Err(ApiError::from("Nepal Pay private key path is not configured"));
+    }
     let amount = format_amount(request.transaction_amount.trim())?;
+    let bill_number = request.bill_number.trim().to_string();
+
+    // RSA SHA256 token: acquirerId, merchantId, mcc, currency, amount, billNumber, userId
+    let token_string = format!(
+        "{}, {}, {}, {}, {}, {}, {}",
+        settings.acquirer_id.trim(),
+        settings.merchant_id.trim(),
+        settings.merchant_category_code,
+        settings.transaction_currency,
+        amount,
+        bill_number,
+        settings.user_id.trim()
+    );
+    let token = nepalpay_sign_token(&token_string, &settings.private_key_path)?;
 
     eprintln!("[NepalPay] generate_dynamic_qr: url={} acquirerId={} merchantId={} amount={} bill={}",
-        settings.api_url.trim(), settings.acquirer_id.trim(), settings.merchant_id.trim(), amount, request.bill_number.trim());
-    let bill_number = request.bill_number.trim().to_string();
+        settings.api_url.trim(), settings.acquirer_id.trim(), settings.merchant_id.trim(), amount, bill_number);
 
     let api_url = settings.api_url.trim().trim_end_matches('/').to_string();
 
@@ -785,7 +807,8 @@ pub async fn generate_nepalpay_dynamic_qr(
         "transactionAmount": amount,
         "billNumber": bill_number,
         "storeLabel": settings.store_label.trim(),
-        "qrImage": false
+        "qrImage": false,
+        "token": token
     });
 
 
@@ -855,6 +878,20 @@ pub async fn generate_nepalpay_dynamic_qr(
         validation_trace_id,
         raw,
     })
+}
+
+fn nepalpay_sign_token(token_string: &str, private_key_path: &str) -> Result<String, ApiError> {
+    let pem = std::fs::read_to_string(private_key_path).map_err(|error| {
+        ApiError::from(format!(
+            "Could not read Nepal Pay private key from {private_key_path}: {error}"
+        ))
+    })?;
+    let private_key = RsaPrivateKey::from_pkcs8_pem(pem.trim()).map_err(|error| {
+        ApiError::from(format!("Invalid Nepal Pay private key (expected PKCS#8 PEM): {error}"))
+    })?;
+    let signing_key = SigningKey::<Sha256>::new(private_key);
+    let signature: rsa::pkcs1v15::Signature = signing_key.sign(token_string.as_bytes());
+    Ok(base64_encode(signature.to_bytes().as_ref()))
 }
 
 #[tauri::command]

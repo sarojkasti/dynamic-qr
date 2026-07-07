@@ -96,40 +96,52 @@ export async function closeAppWindow() {
   await getCurrentWindow().close();
 }
 
-export async function openInvoicePopup(invoice) {
-  if (!canUseTauri() || !invoice?.invoiceNo) return;
-
-  const popupParams = new URLSearchParams({ popup: "1", invoice: invoice.invoiceNo });
+async function openProviderPopup(invoice, provider, label, offsetX) {
+  const labelId = `invoice-qr-popup-${provider}`;
+  const popupParams = new URLSearchParams({
+    popup: "1",
+    invoice: invoice.invoiceNo,
+    provider,
+  });
   if (invoice.vchCode) popupParams.set("vchCode", String(invoice.vchCode));
   const popupUrl = `index.html?${popupParams.toString()}`;
-  const existingPopup = await WebviewWindow.getByLabel("invoice-qr-popup");
 
-  if (existingPopup) {
-    await existingPopup.setFocus();
-    await existingPopup.emit("invoice-popup-update", {
+  const existing = await WebviewWindow.getByLabel(labelId);
+  if (existing) {
+    await existing.setFocus();
+    await existing.emit("invoice-popup-update", {
       invoiceNo: invoice.invoiceNo,
-      vchCode: invoice.vchCode ?? null
+      vchCode: invoice.vchCode ?? null,
     });
     return;
   }
 
-  const popup = new WebviewWindow("invoice-qr-popup", {
+  const popup = new WebviewWindow(labelId, {
     url: popupUrl,
-    title: `Invoice ${invoice.invoiceNo}`,
-    width: 430,
-    height: 620,
-    minWidth: 390,
-    minHeight: 560,
+    title: `${label} — Invoice ${invoice.invoiceNo}`,
+    width: 380,
+    height: 580,
+    minWidth: 340,
+    minHeight: 500,
     resizable: true,
     maximizable: false,
     decorations: true,
-    center: true,
-    focus: true
+    x: offsetX,
+    focus: provider === "fonepay",
   });
 
   popup.once("tauri://created", async () => {
-    await popup.setFocus();
+    if (provider === "fonepay") await popup.setFocus();
   });
+}
+
+export async function openInvoicePopup(invoice) {
+  if (!canUseTauri() || !invoice?.invoiceNo) return;
+  // Open two side-by-side windows: Fonepay on the left, Nepal Pay on the right
+  await Promise.all([
+    openProviderPopup(invoice, "fonepay", "Fonepay", 100),
+    openProviderPopup(invoice, "nepalpay", "Nepal Pay", 500),
+  ]);
 }
 
 export async function listenToInvoicePopupUpdate(callback) {

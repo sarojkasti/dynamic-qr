@@ -82,6 +82,24 @@ async function boot() {
     if (state.popupMode) {
       const invoiceNo = params.get("invoice") || params.get("invoiceNo") || params.get("vchNo");
       const vchCode = params.get("vchCode");
+      // Each popup window is pinned to one provider via URL param
+      const urlProvider = params.get("provider");
+      if (urlProvider === "fonepay" || urlProvider === "nepalpay") {
+        state.qrProvider = urlProvider;
+        saveQrProvider(urlProvider);
+      }
+      // Load settings so popup knows credentials and POS column
+      const [settingsState, fonepaySettings, nepalPaySettings] = await Promise.all([
+        getBusySettings().catch(() => null),
+        getFonepaySettings().catch(() => null),
+        getNepalPaySettings().catch(() => null),
+      ]);
+      if (settingsState) {
+        state.busySettings = settingsState.settings;
+        state.busySettingsConfigured = settingsState.isConfigured;
+      }
+      state.fonepaySettings = fonepaySettings;
+      state.nepalPaySettings = nepalPaySettings;
       await loadPopupInvoice(invoiceNo, vchCode);
       await listenToInvoicePopupUpdate(async (payload) => {
         await loadPopupInvoice(payload.invoiceNo, payload.vchCode);
@@ -169,7 +187,8 @@ function invoiceKey(invoice) {
 
 function qrPayloadKey(invoice) {
   const invoiceNo = String(invoice?.invoiceNo ?? "").trim();
-  return invoiceNo ? `no:${invoiceNo}` : "";
+  const provider = state?.qrProvider ?? "fonepay";
+  return invoiceNo ? `no:${invoiceNo}:${provider}` : "";
 }
 
 function invoiceSubtitle(invoice) {
@@ -747,12 +766,15 @@ function render() {
 function renderInvoicePopup(invoice) {
   const qrKey = qrPayloadKey(invoice);
   const hasQrPayload = Boolean(state.qrPayloads[qrKey]);
+  const hasAmount = parseFloat(invoice?.netAmount ?? "0") > 0;
+  const providerLabel = state.qrProvider === "nepalpay" ? "Nepal Pay" : "Fonepay";
+  const providerColor = state.qrProvider === "nepalpay" ? "#c0392b" : "#1b6b68";
 
   document.querySelector("#app").innerHTML = `
     <section class="popup-shell">
       <header class="popup-header">
         <div>
-          <p class="eyebrow">New invoice</p>
+          <p class="eyebrow" style="color:${providerColor};font-weight:700;">${escapeHtml(providerLabel)}</p>
           <h1>${invoice ? escapeHtml(invoice.invoiceNo) : "Invoice"}</h1>
         </div>
         <span class="popup-status">${escapeHtml(invoice?.paymentStatus ?? "Pending")}</span>
@@ -762,8 +784,9 @@ function renderInvoicePopup(invoice) {
 
       ${invoice ? `
         <main class="popup-main">
-          ${parseFloat(invoice.netAmount ?? "0") > 0
-            ? `<canvas id="qrCanvas" width="260" height="260"></canvas>`
+          ${hasAmount
+            ? `<canvas id="qrCanvas" width="260" height="260"></canvas>
+               <p class="qr-status">${hasQrPayload ? escapeHtml(providerLabel) + " QR ready" : "Generating…"}</p>`
             : `<p class="qr-status">No QR — amount is zero</p>`}
           <dl class="popup-details">
             <div><dt>Party</dt><dd>${escapeHtml(invoice.partyName ?? "-")}</dd></div>
@@ -1063,6 +1086,10 @@ function renderNepalPaySettingsPanel() {
           <input name="userId" placeholder="npi_user" value="${escapeHtml(s?.userId ?? "")}" required />
         </label>
         <label>
+          Private Key Path (PKCS#8 PEM — required for API token signing)
+          <input name="privateKeyPath" placeholder="C:\\keys\\NPI_private.pem" value="${escapeHtml(s?.privateKeyPath ?? "")}" required />
+        </label>
+        <label>
           POS Amount Column
           <input name="posCreditColumn" placeholder="CCAmt1" value="${escapeHtml(s?.posCreditColumn ?? "")}" />
           <small style="color:#64748b;font-size:0.8rem;">Column in POSDet table used as the invoice amount (e.g. CCAmt1)</small>
@@ -1218,17 +1245,23 @@ function bindEvents() {
 
   document.querySelector("#switchQrProvider")?.addEventListener("click", (event) => {
     const newProvider = event.currentTarget.dataset.provider;
+    // Close any active Nepal Pay socket before switching
+    const currentInvoice = selectedInvoice();
+    if (currentInvoice) {
+      const oldKey = qrPayloadKey(currentInvoice); // key with old provider
+      closeNepalPayStompSocket(oldKey);
+    }
     state.qrProvider = newProvider;
     saveQrProvider(newProvider);
     state.error = "";
-    const currentInvoice = selectedInvoice();
+    // qrPayloadKey now includes provider, so cached QR for the new provider
+    // is preserved — only trigger generation if not already cached
     if (currentInvoice) {
-      const key = qrPayloadKey(currentInvoice);
-      closeNepalPayStompSocket(key);
-      delete state.qrPayloads[key];
-      saveQrPayloads(state.qrPayloads);
-      releaseQrGenerationLock(key);
-      state.qrAutoGenerateKey = key;
+      const newKey = qrPayloadKey(currentInvoice);
+      if (!state.qrPayloads[newKey]) {
+        releaseQrGenerationLock(newKey);
+        state.qrAutoGenerateKey = newKey;
+      }
     }
     render();
   });
@@ -1298,6 +1331,7 @@ async function handleNepalPaySettingsSubmit(form) {
     transactionCurrency: Number.parseInt(form.transactionCurrency.value, 10),
     storeLabel: form.storeLabel.value.trim(),
     userId: form.userId.value.trim(),
+    privateKeyPath: form.privateKeyPath.value.trim(),
     posCreditColumn,
     wsUrl: form.wsUrl.value.trim(),
     wsUsername: form.wsUsername.value.trim(),
