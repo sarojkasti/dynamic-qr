@@ -788,9 +788,9 @@ pub async fn generate_nepalpay_dynamic_qr(
     if settings.private_key_pem.trim().is_empty() {
         return Err(ApiError::from("Nepal Pay private key is not configured — paste the PKCS#8 PEM private key in settings"));
     }
-    // RSA-SHA256 token string per NPI doc: acquirerId+", "+merchantId+", "+mcc+", "+currency+", "+amount+", "+billNumber+", "+userId
+    // RSA-SHA256 token string: comma-separated, no spaces
     let token_string = format!(
-        "{}, {}, {}, {}, {}, {}, {}",
+        "{},{},{},{},{},{},{}",
         settings.acquirer_id.trim(),
         settings.merchant_id.trim(),
         settings.merchant_category_code,
@@ -819,6 +819,7 @@ pub async fn generate_nepalpay_dynamic_qr(
         "billNumber": bill_number,
         "storeLabel": settings.store_label.trim(),
         "terminalLabel": "Terminal1",
+        "qrImage": false,
         "token": token
     });
 
