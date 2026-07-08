@@ -1098,7 +1098,7 @@ pub fn read_nepalpay_settings() -> Result<crate::models::NepalPaySettings, Strin
             transaction_currency: 524,
             store_label: String::new(),
             user_id: String::new(),
-            private_key_path: String::new(),
+            private_key_pem: String::new(),
             pos_credit_column: String::new(),
             ws_url: String::new(),
             ws_username: String::new(),

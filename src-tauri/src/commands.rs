@@ -22,6 +22,7 @@ use crate::{
 
 use rsa::{
     pkcs1v15::SigningKey,
+    pkcs1::DecodeRsaPrivateKey,
     pkcs8::DecodePrivateKey,
     signature::{Signer, SignatureEncoding},
     RsaPrivateKey,
@@ -781,13 +782,13 @@ pub async fn generate_nepalpay_dynamic_qr(
     if settings.user_id.trim().is_empty() {
         return Err(ApiError::from("Nepal Pay user ID is not configured"));
     }
-    if settings.private_key_path.trim().is_empty() {
-        return Err(ApiError::from("Nepal Pay private key path is not configured"));
-    }
     let amount = format_amount(request.transaction_amount.trim())?;
     let bill_number = request.bill_number.trim().to_string();
 
-    // RSA SHA256 token: acquirerId, merchantId, mcc, currency, amount, billNumber, userId
+    if settings.private_key_pem.trim().is_empty() {
+        return Err(ApiError::from("Nepal Pay private key is not configured — paste the PKCS#8 PEM private key in settings"));
+    }
+    // RSA-SHA256 token: comma-separated acquirerId, merchantId, mcc, currency, amount, billNumber, userId
     let token_string = format!(
         "{}, {}, {}, {}, {}, {}, {}",
         settings.acquirer_id.trim(),
@@ -798,7 +799,7 @@ pub async fn generate_nepalpay_dynamic_qr(
         bill_number,
         settings.user_id.trim()
     );
-    let token = nepalpay_sign_token(&token_string, &settings.private_key_path)?;
+    let token = nepalpay_sign_token(&token_string, settings.private_key_pem.trim())?;
 
     eprintln!("[NepalPay] generate_dynamic_qr: url={} acquirerId={} merchantId={} amount={} bill={}",
         settings.api_url.trim(), settings.acquirer_id.trim(), settings.merchant_id.trim(), amount, bill_number);
@@ -818,7 +819,6 @@ pub async fn generate_nepalpay_dynamic_qr(
         "transactionAmount": amount,
         "billNumber": bill_number,
         "storeLabel": settings.store_label.trim(),
-        "qrImage": false,
         "token": token
     });
 
@@ -899,15 +899,16 @@ pub async fn generate_nepalpay_dynamic_qr(
     })
 }
 
-fn nepalpay_sign_token(token_string: &str, private_key_path: &str) -> Result<String, ApiError> {
-    let pem = std::fs::read_to_string(private_key_path).map_err(|error| {
-        ApiError::from(format!(
-            "Could not read Nepal Pay private key from {private_key_path}: {error}"
-        ))
-    })?;
-    let private_key = RsaPrivateKey::from_pkcs8_pem(pem.trim()).map_err(|error| {
-        ApiError::from(format!("Invalid Nepal Pay private key (expected PKCS#8 PEM): {error}"))
-    })?;
+fn nepalpay_sign_token(token_string: &str, private_key_pem: &str) -> Result<String, ApiError> {
+    // Accept both PKCS#8 (-----BEGIN PRIVATE KEY-----) and PKCS#1 (-----BEGIN RSA PRIVATE KEY-----)
+    // openssl pkcs12 -in NPI.pfx -nocerts -nodes typically outputs PKCS#1
+    let private_key = if private_key_pem.contains("BEGIN PRIVATE KEY") {
+        RsaPrivateKey::from_pkcs8_pem(private_key_pem)
+            .map_err(|e| ApiError::from(format!("Invalid PKCS#8 private key: {e}")))?
+    } else {
+        RsaPrivateKey::from_pkcs1_pem(private_key_pem)
+            .map_err(|e| ApiError::from(format!("Invalid PKCS#1 (RSA) private key: {e}")))?
+    };
     let signing_key = SigningKey::<Sha256>::new(private_key);
     let signature: rsa::pkcs1v15::Signature = signing_key.sign(token_string.as_bytes());
     Ok(base64_encode(signature.to_bytes().as_ref()))

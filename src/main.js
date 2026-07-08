@@ -1096,8 +1096,8 @@ function renderNepalPaySettingsPanel() {
           <input name="userId" placeholder="npi_user" value="${escapeHtml(s?.userId ?? "")}" required />
         </label>
         <label>
-          Private Key Path (PKCS#8 PEM — required for API token signing)
-          <input name="privateKeyPath" placeholder="C:\\keys\\NPI_private.pem" value="${escapeHtml(s?.privateKeyPath ?? "")}" required />
+          Private Key (PKCS#8 PEM — optional, paste content if Nepal Pay requires token signing)
+          <textarea name="privateKeyPem" rows="5" placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----" style="font-family:monospace;font-size:0.8rem;width:100%">${escapeHtml(s?.privateKeyPem ?? "")}</textarea>
         </label>
         <label>
           POS Amount Column
@@ -1341,7 +1341,7 @@ async function handleNepalPaySettingsSubmit(form) {
     transactionCurrency: Number.parseInt(form.transactionCurrency.value, 10),
     storeLabel: form.storeLabel.value.trim(),
     userId: form.userId.value.trim(),
-    privateKeyPath: form.privateKeyPath.value.trim(),
+    privateKeyPem: form.privateKeyPem.value.trim(),
     posCreditColumn,
     wsUrl: form.wsUrl.value.trim(),
     wsUsername: form.wsUsername.value.trim(),

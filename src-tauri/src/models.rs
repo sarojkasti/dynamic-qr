@@ -157,8 +157,10 @@ pub struct NepalPaySettings {
     pub transaction_currency: i32,
     pub store_label: String,
     pub user_id: String,
-    /// PKCS#8 PEM private key — used to RSA-sign the token string required by the NPI QR API
-    pub private_key_path: String,
+    /// PKCS#8 PEM private key content — used to RSA-sign the token string required by the NPI QR API.
+    /// Optional: if empty, token signing is skipped.
+    #[serde(alias = "private_key_path", default)]
+    pub private_key_pem: String,
     #[serde(default)]
     pub pos_credit_column: String,
     pub ws_url: String,
