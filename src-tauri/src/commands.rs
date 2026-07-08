@@ -801,9 +801,7 @@ pub async fn generate_nepalpay_dynamic_qr(
     );
     eprintln!("[NepalPay] token_string to sign: {token_string}");
     let token = nepalpay_sign_token(&token_string, settings.private_key_pem.trim())?;
-
-    eprintln!("[NepalPay] generate_dynamic_qr: url={} acquirerId={} merchantId={} amount={} bill={}",
-        settings.api_url.trim(), settings.acquirer_id.trim(), settings.merchant_id.trim(), amount, bill_number);
+    eprintln!("[NepalPay] generated token: {token}");
 
     let api_url = settings.api_url.trim().trim_end_matches('/').to_string();
 
@@ -820,9 +818,12 @@ pub async fn generate_nepalpay_dynamic_qr(
         "transactionAmount": amount,
         "billNumber": bill_number,
         "storeLabel": settings.store_label.trim(),
+        "terminalLabel": "Terminal1",
         "token": token
     });
 
+
+    eprintln!("[NepalPay] request payload: {}", serde_json::to_string_pretty(&payload).unwrap_or_default());
 
     // Basic Auth: base64(api_username:api_password)
     let basic_auth = base64_encode(
