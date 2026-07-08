@@ -823,12 +823,12 @@ pub async fn generate_nepalpay_dynamic_qr(
     });
 
 
-    // Basic Auth: base64(username:api_token)
+    // Basic Auth: base64(api_username:api_password)
     let basic_auth = base64_encode(
-        format!("{}:{}", settings.ws_username.trim(), settings.ws_api_token.trim()).as_bytes()
+        format!("{}:{}", settings.api_username.trim(), settings.api_password.trim()).as_bytes()
     );
 
-    eprintln!("[NepalPay] using Basic Auth username={}", settings.ws_username.trim());
+    eprintln!("[NepalPay] using Basic Auth username={}", settings.api_username.trim());
 
     let response = reqwest::Client::new()
         .post(&api_url)

@@ -1105,6 +1105,17 @@ function renderNepalPaySettingsPanel() {
           <small style="color:#64748b;font-size:0.8rem;">Column in POSDet table used as the invoice amount (e.g. CCAmt1)</small>
         </label>
         <fieldset style="margin-top:1rem;padding:1rem;border:1px solid #ccc;border-radius:4px;">
+          <legend>API Basic Authentication</legend>
+          <label>
+            Username
+            <input name="apiUsername" placeholder="plazmat" value="${escapeHtml(s?.apiUsername ?? "")}" />
+          </label>
+          <label>
+            Password
+            <input name="apiPassword" type="password" placeholder="Abcd@123" value="${escapeHtml(s?.apiPassword ?? "")}" />
+          </label>
+        </fieldset>
+        <fieldset style="margin-top:1rem;padding:1rem;border:1px solid #ccc;border-radius:4px;">
           <legend>WebSocket Status (STOMP)</legend>
           <label>
             WebSocket URL
@@ -1343,6 +1354,8 @@ async function handleNepalPaySettingsSubmit(form) {
     userId: form.userId.value.trim(),
     privateKeyPem: form.privateKeyPem.value.trim(),
     posCreditColumn,
+    apiUsername: form.apiUsername.value.trim(),
+    apiPassword: form.apiPassword.value,
     wsUrl: form.wsUrl.value.trim(),
     wsUsername: form.wsUsername.value.trim(),
     wsApiToken: form.wsApiToken.value

@@ -1100,6 +1100,8 @@ pub fn read_nepalpay_settings() -> Result<crate::models::NepalPaySettings, Strin
             user_id: String::new(),
             private_key_pem: String::new(),
             pos_credit_column: String::new(),
+            api_username: String::new(),
+            api_password: String::new(),
             ws_url: String::new(),
             ws_username: String::new(),
             ws_api_token: String::new(),
@@ -1185,12 +1187,14 @@ fn nepalpay_settings_file_path() -> Result<PathBuf, String> {
 
 fn encrypt_nepalpay_settings(settings: &mut crate::models::NepalPaySettings) -> Result<(), String> {
     settings.user_id = protect_secret(&settings.user_id)?;
+    settings.api_password = protect_secret(&settings.api_password)?;
     settings.ws_api_token = protect_secret(&settings.ws_api_token)?;
     Ok(())
 }
 
 fn decrypt_nepalpay_settings(settings: &mut crate::models::NepalPaySettings) -> Result<(), String> {
     settings.user_id = unprotect_secret(&settings.user_id)?;
+    settings.api_password = unprotect_secret(&settings.api_password)?;
     settings.ws_api_token = unprotect_secret(&settings.ws_api_token)?;
     Ok(())
 }

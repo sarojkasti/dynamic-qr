@@ -163,6 +163,12 @@ pub struct NepalPaySettings {
     pub private_key_pem: String,
     #[serde(default)]
     pub pos_credit_column: String,
+    /// Basic Auth username for the QR generation REST API
+    #[serde(default)]
+    pub api_username: String,
+    /// Basic Auth password for the QR generation REST API — stored encrypted, decrypted before use
+    #[serde(default)]
+    pub api_password: String,
     pub ws_url: String,
     pub ws_username: String,
     /// Plain api_token — stored encrypted, decrypted before use
