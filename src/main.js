@@ -1533,29 +1533,73 @@ function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
     if (!message) { console.warn("[NP-WS] MESSAGE body is not valid JSON:", frame.body); return; }
 
     const status = String(message.status ?? "").toUpperCase();
-    console.log("[NP-WS] Payment event", { status, message });
+    console.log("[NP-WS] Payment event received", { status, fullMessage: message });
 
     if (status === "ENTR") {
+      // Phase: QR Parsing — customer established WS connection
+      console.log("[NP-WS] ENTR — connection established", {
+        merchant_id: message.merchant_id,
+        request_id: message.request_id,
+        ws_id: message.ws_id,
+        activityMessage: message.message,
+      });
       current.status = "entr";
       render();
       return;
     }
 
     if (status === "PARSED") {
+      // Phase: QR Parsing — customer scanned the QR code
+      console.log("[NP-WS] PARSED — QR scanned by customer", {
+        merchant_id: message.merchant_id,
+        request_id: message.request_id,
+        ws_id: message.ws_id,
+        activityMessage: message.message,
+      });
       current.status = "parsed";
       render();
       return;
     }
 
-    const debitStatus = String(message.debit_status ?? "");
-    if (status === "COMPLETED" && debitStatus === "000") {
+    if (status === "COMPLETED") {
+      // Phase: QR Transaction — debit_status 000 = success, rest = failed
+      // credit_status 000/999/DEFER = success, rest = failed
+      const debitStatus = String(message.debit_status ?? "");
+      const creditStatus = String(message.credit_status ?? "");
+      // txn_id is the unique channel id (= validationTraceId from QR generation)
+      const txnId = String(message.txn_id ?? message.request_id ?? payload.validationTraceId ?? "").trim();
+      // message.message is the Nepal Pay activity description (e.g. "Transaction Completed")
+      const activityMessage = String(message.message ?? "").trim();
+      console.log("[NP-WS] COMPLETED event", {
+        debitStatus,
+        creditStatus,
+        txnId,
+        activityMessage,
+        merchant_id: message.merchant_id,
+        ws_id: message.ws_id,
+        fullMessage: message,
+      });
+
       current.handled = true;
-      current.status = "completed";
       _clearNepalPayTimers(current);
-      const txnId = message.txn_id ?? payload.validationTraceId ?? "";
+
+      const debitSuccess = debitStatus === "000";
+      const creditSuccess = ["000", "999", "defer"].includes(creditStatus.toLowerCase());
+
+      if (!debitSuccess) {
+        console.warn("[NP-WS] COMPLETED — debit failed", { debitStatus, creditStatus, activityMessage });
+        current.status = "failed";
+        notifyFonepayPaymentOutcome("failure", invoice.invoiceNo, activityMessage || `debit_status: ${debitStatus}`);
+        closeNepalPayStompSocket(key);
+        render();
+        return;
+      }
+
+      current.status = "completed";
+      console.log("[NP-WS] Payment success — marking invoice paid", { txnId, creditStatus, activityMessage });
 
       try {
-        const updatedInvoice = await markInvoicePaid(invoice.invoiceNo, txnId);
+        const updatedInvoice = await markInvoicePaid(invoice.invoiceNo, txnId || undefined);
         if (updatedInvoice) {
           state.invoices = state.invoices.map((item) =>
             invoiceKey(item) === invoiceKey(updatedInvoice) ? updatedInvoice : item
@@ -1564,11 +1608,22 @@ function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
           state.error = "";
           localStorage.setItem(
             PAYMENT_UPDATE_STORAGE_KEY,
-            JSON.stringify({ invoiceNo: updatedInvoice.invoiceNo, status: "Paid", at: Date.now() })
+            JSON.stringify({
+              invoiceNo: updatedInvoice.invoiceNo,
+              status: "Paid",
+              txnId,
+              activityMessage,
+              debitStatus,
+              creditStatus,
+              at: Date.now(),
+            })
           );
-          notifyFonepayPaymentOutcome("success", invoice.invoiceNo, `TXN ${txnId}`);
+          const notifyDetail = [txnId ? `TXN ${txnId}` : "", activityMessage].filter(Boolean).join(" | ");
+          notifyFonepayPaymentOutcome("success", invoice.invoiceNo, notifyDetail);
+          console.log("[NP-WS] Invoice marked Paid", { invoiceNo: updatedInvoice.invoiceNo, txnId, activityMessage });
         }
       } catch (error) {
+        console.error("[NP-WS] markInvoicePaid failed", { invoiceNo: invoice.invoiceNo, error: String(error) });
         state.error = errorMessage(error);
       } finally {
         closeNepalPayStompSocket(key);
@@ -1579,13 +1634,28 @@ function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
     }
 
     if (status === "FAILED") {
+      // Phase: QR Transaction — payment failed
+      const activityMessage = String(message.message ?? "Payment failed").trim();
+      const debitStatus = String(message.debit_status ?? "");
+      const creditStatus = String(message.credit_status ?? "");
+      console.log("[NP-WS] FAILED — payment failed", {
+        debitStatus,
+        creditStatus,
+        activityMessage,
+        merchant_id: message.merchant_id,
+        ws_id: message.ws_id,
+        fullMessage: message,
+      });
       current.handled = true;
       current.status = "failed";
       _clearNepalPayTimers(current);
-      notifyFonepayPaymentOutcome("failure", invoice.invoiceNo, message.message ?? "Failed");
+      notifyFonepayPaymentOutcome("failure", invoice.invoiceNo, activityMessage);
       closeNepalPayStompSocket(key);
       render();
+      return;
     }
+
+    console.log("[NP-WS] Unhandled status event", { status, fullMessage: message });
   };
 
   socket.onerror = (event) => {
