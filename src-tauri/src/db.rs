@@ -990,16 +990,56 @@ fn write_settings_file(settings: &BusySettings, path: &PathBuf) -> Result<(), St
     })
 }
 
-fn settings_file_path() -> Result<PathBuf, String> {
-    if let Ok(appdata) = env::var("APPDATA") {
-        return Ok(PathBuf::from(appdata)
-            .join("BusyPay QR")
-            .join("busy-settings.json"));
+fn candidate_config_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    // Same search order as the license file lookup, so settings JSON files
+    // can live alongside license.txt.
+    if let Ok(current_dir) = env::current_dir() {
+        dirs.push(current_dir);
     }
 
-    Ok(env::current_dir()
-        .map_err(|error| error.to_string())?
-        .join("busy-settings.json"))
+    if let Ok(exe_path) = env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            dirs.push(exe_dir.to_path_buf());
+            if let Some(parent_dir) = exe_dir.parent() {
+                dirs.push(parent_dir.to_path_buf());
+            }
+        }
+    }
+
+    if let Ok(appdata) = env::var("APPDATA") {
+        dirs.push(PathBuf::from(appdata).join("BusyPay QR"));
+    }
+
+    let mut deduped = Vec::new();
+    for dir in dirs {
+        if !deduped.iter().any(|existing| existing == &dir) {
+            deduped.push(dir);
+        }
+    }
+
+    deduped
+}
+
+fn resolve_config_path(file_name: &str) -> Result<PathBuf, String> {
+    let dirs = candidate_config_dirs();
+    for dir in &dirs {
+        let candidate = dir.join(file_name);
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    let fallback_dir = dirs
+        .first()
+        .cloned()
+        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    Ok(fallback_dir.join(file_name))
+}
+
+fn settings_file_path() -> Result<PathBuf, String> {
+    resolve_config_path("busy-settings.json")
 }
 
 fn mask_connection_string(value: &str) -> String {
@@ -1174,15 +1214,7 @@ pub fn clear_nepalpay_settings() -> Result<(), String> {
 }
 
 fn nepalpay_settings_file_path() -> Result<PathBuf, String> {
-    if let Ok(appdata) = env::var("APPDATA") {
-        return Ok(PathBuf::from(appdata)
-            .join("BusyPay QR")
-            .join("nepalpay-settings.json"));
-    }
-
-    Ok(env::current_dir()
-        .map_err(|error| error.to_string())?
-        .join("nepalpay-settings.json"))
+    resolve_config_path("nepalpay-settings.json")
 }
 
 fn encrypt_nepalpay_settings(settings: &mut crate::models::NepalPaySettings) -> Result<(), String> {
@@ -1200,15 +1232,7 @@ fn decrypt_nepalpay_settings(settings: &mut crate::models::NepalPaySettings) -> 
 }
 
 fn fonepay_settings_file_path() -> Result<PathBuf, String> {
-    if let Ok(appdata) = env::var("APPDATA") {
-        return Ok(PathBuf::from(appdata)
-            .join("BusyPay QR")
-            .join("fonepay-settings.json"));
-    }
-
-    Ok(env::current_dir()
-        .map_err(|error| error.to_string())?
-        .join("fonepay-settings.json"))
+    resolve_config_path("fonepay-settings.json")
 }
 
 const PROTECTED_SECRET_PREFIX: &str = "dpapi:v1:";

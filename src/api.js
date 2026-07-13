@@ -135,13 +135,16 @@ async function openProviderPopup(invoice, provider, label, offsetX) {
   });
 }
 
-export async function openInvoicePopup(invoice) {
+export async function openInvoicePopup(invoice, providers = ["fonepay", "nepalpay"]) {
   if (!canUseTauri() || !invoice?.invoiceNo) return;
-  // Open two side-by-side windows: Fonepay on the left, Nepal Pay on the right
-  await Promise.all([
-    openProviderPopup(invoice, "fonepay", "Fonepay", 100),
-    openProviderPopup(invoice, "nepalpay", "Nepal Pay", 500),
-  ]);
+  // Open windows side by side: Fonepay on the left, Nepal Pay on the right
+  await Promise.all(
+    providers.map((provider) =>
+      provider === "fonepay"
+        ? openProviderPopup(invoice, "fonepay", "Fonepay", 100)
+        : openProviderPopup(invoice, "nepalpay", "Nepal Pay", 500)
+    )
+  );
 }
 
 export async function listenToInvoicePopupUpdate(callback) {
@@ -191,6 +194,16 @@ export async function markInvoicePaid(invoiceNo, transactionId = "") {
   }
 
   return invoke("mark_invoice_paid", { invoiceNo, transactionId });
+}
+
+export async function logPaymentStatus(message) {
+  console.log(message);
+  if (!canUseTauri()) return;
+  try {
+    return await invoke("log_payment_status", { message });
+  } catch (error) {
+    console.error("[PaymentLog] failed", error);
+  }
 }
 
 export async function saveBankMerchant(bank) {

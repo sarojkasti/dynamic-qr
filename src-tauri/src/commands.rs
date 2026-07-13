@@ -69,6 +69,12 @@ pub fn mark_invoice_paid(
 }
 
 #[tauri::command]
+pub fn log_payment_status(message: String) -> Result<(), ApiError> {
+    eprintln!("[Payment] {message}");
+    Ok(())
+}
+
+#[tauri::command]
 pub fn save_bank_merchant(
     db: State<'_, BusyDb>,
     bank: BankMerchant,

@@ -11,6 +11,7 @@ import {
   generateFonepayDynamicQr,
   generateNepalPayDynamicQr,
   closeAppWindow,
+  logPaymentStatus,
   getFonepaySettings,
   saveFonepaySettings,
   getNepalPaySettings,
@@ -33,7 +34,6 @@ const QR_GENERATION_LOCK_STORAGE_KEY = "busypay-qr.qr-generation-locks.v1";
 const PAYMENT_UPDATE_STORAGE_KEY = "busypay-qr.payment-update.v1";
 const NOTIFICATIONS_ENABLED_STORAGE_KEY = "busypay-qr.notifications-enabled.v1";
 const QR_PROVIDER_STORAGE_KEY = "busypay-qr.qr-provider.v1";
-const qrBaseUrl = "https://qr.yourdomain.com/invoice";
 const params = new URLSearchParams(window.location.search);
 const isPopupWindow = params.get("popup") === "1";
 const qrPaymentSockets = new Map();
@@ -64,6 +64,7 @@ const state = {
   qrPayloads: loadQrPayloads(),
   qrLoadingKeys: {},
   qrAutoGenerateKey: "",
+  qrProviderAvailability: {},
   fonepaySettings: null,
   nepalPaySettings: null,
   notificationsEnabled: loadNotificationPreference(),
@@ -183,11 +184,20 @@ async function boot() {
 }
 
 function selectedInvoice() {
-  return (
-    state.invoices.find((invoice) => invoiceKey(invoice) === state.selectedInvoiceKey) ??
-    state.invoices[0] ??
-    null
-  );
+  if (!state.invoices?.length) {
+    if (state.selectedInvoiceKey) {
+      state.selectedInvoiceKey = "";
+    }
+    return null;
+  }
+
+  const selected = state.invoices.find((invoice) => invoiceKey(invoice) === state.selectedInvoiceKey);
+  if (selected) {
+    return selected;
+  }
+
+  state.selectedInvoiceKey = invoiceKey(state.invoices[0]);
+  return state.invoices[0];
 }
 
 function invoiceKey(invoice) {
@@ -196,33 +206,41 @@ function invoiceKey(invoice) {
 }
 
 function qrPayloadKey(invoice) {
+  return qrPayloadKeyForProvider(invoice, state?.qrProvider ?? "fonepay");
+}
+
+function qrPayloadKeyForProvider(invoice, provider = state?.qrProvider ?? "fonepay") {
   const invoiceNo = String(invoice?.invoiceNo ?? "").trim();
-  const provider = state?.qrProvider ?? "fonepay";
-  return invoiceNo ? `no:${invoiceNo}:${provider}` : "";
+  const invoiceKeyValue = invoice?.vchCode ? `vch:${invoice.vchCode}` : `no:${invoiceNo}`;
+  return invoiceNo ? `${invoiceKeyValue}:${provider}` : "";
+}
+
+function getCachedQrPayloadForInvoice(invoice) {
+  const key = qrPayloadKey(invoice);
+  if (!key) return null;
+
+  if (state.qrPayloads[key]) {
+    return state.qrPayloads[key];
+  }
+
+  try {
+    const persistedPayloads = loadQrPayloads();
+    const persistedPayload = persistedPayloads[key];
+    if (persistedPayload) {
+      state.qrPayloads[key] = persistedPayload;
+      return persistedPayload;
+    }
+  } catch {
+    // Ignore storage read failures and fall back to the in-memory cache.
+  }
+
+  return null;
 }
 
 function invoiceSubtitle(invoice) {
   const party = invoice.partyName ?? "Unknown party";
   const series = invoice.vchSeriesCode ? `Series ${invoice.vchSeriesCode}` : "No series";
   return `${party} | ${series}`;
-}
-
-function dynamicInvoiceUrl(invoice) {
-  const url = new URL(`${qrBaseUrl}/${encodeURIComponent(invoice.invoiceNo)}`);
-
-  if (invoice.netAmount) {
-    url.searchParams.set("amount", invoice.netAmount);
-  }
-
-  if (invoice.vchCode) {
-    url.searchParams.set("vchCode", invoice.vchCode);
-  }
-
-  if (invoice.vchSeriesCode) {
-    url.searchParams.set("series", invoice.vchSeriesCode);
-  }
-
-  return url.toString();
 }
 
 async function handleSearch(form) {
@@ -300,19 +318,104 @@ async function stopInvoiceWatcher() {
   await stopBusyInvoiceWatcher();
 }
 
+function providerPosCreditColumn(provider) {
+  return (provider === "nepalpay"
+    ? state.nepalPaySettings?.posCreditColumn
+    : state.fonepaySettings?.posCreditColumn
+  )?.trim() || state.busySettings?.posCreditColumn?.trim() || null;
+}
+
+function invoiceHasUsableQrAmount(invoice, provider = state?.qrProvider ?? "fonepay") {
+  if (!providerPosCreditColumn(provider)) return false;
+  if (invoice?.amountSource === "Invoice net amount") return false;
+
+  const amount = parseFloat(invoice?.netAmount ?? "0");
+  return Number.isFinite(amount) && amount > 0;
+}
+
+async function fetchInvoiceForColumn(event, posColumn) {
+  if (event.vchCode) {
+    return getInvoiceByVchCode(event.vchCode, posColumn);
+  }
+  return getInvoice(event.invoiceNo, posColumn);
+}
+
+async function switchQrProvider(newProvider) {
+  // Close any active Nepal Pay socket before switching
+  const currentInvoice = selectedInvoice();
+  if (currentInvoice) {
+    const oldKey = qrPayloadKey(currentInvoice); // key with old provider
+    closeNepalPayStompSocket(oldKey);
+    delete state.qrLoadingKeys[oldKey];
+    releaseQrGenerationLock(oldKey);
+  }
+  state.qrProvider = newProvider;
+  saveQrProvider(newProvider);
+  state.error = "";
+  state.qrAutoGenerateKey = "";
+  // Switch providers without triggering a fresh Fonepay API call.
+  // NepalPay can still start its websocket flow when a QR is needed.
+  if (currentInvoice) {
+    const newKey = qrPayloadKey(currentInvoice);
+    releaseQrGenerationLock(newKey);
+    delete state.qrLoadingKeys[newKey];
+
+    if (newProvider === "nepalpay" && !getCachedQrPayload(newKey)) {
+      state.qrAutoGenerateKey = newKey;
+    }
+  }
+
+  await refreshSelectedInvoiceForCurrentProvider();
+  render();
+}
+
+async function ensureProviderAvailabilityChecked(invoice) {
+  const key = invoiceKey(invoice);
+  if (!key || state.qrProviderAvailability[key]) return;
+
+  state.qrProviderAvailability[key] = { fonepay: null, nepalpay: null }; // mark in-progress
+
+  const [fonepayInvoice, nepalpayInvoice] = await Promise.all([
+    fetchInvoiceForColumn(invoice, providerPosCreditColumn("fonepay")),
+    fetchInvoiceForColumn(invoice, providerPosCreditColumn("nepalpay")),
+  ]);
+
+  const availability = {
+    fonepay: invoiceHasUsableQrAmount(fonepayInvoice, "fonepay"),
+    nepalpay: invoiceHasUsableQrAmount(nepalpayInvoice, "nepalpay"),
+  };
+  state.qrProviderAvailability[key] = availability;
+
+  // If the active provider has no usable amount for this invoice but the
+  // other one does, switch automatically instead of leaving the user
+  // stuck looking at an empty QR stage with no way to switch.
+  const altProvider = state.qrProvider === "nepalpay" ? "fonepay" : "nepalpay";
+  const stillSelected = key === invoiceKey(selectedInvoice());
+  if (stillSelected && !availability[state.qrProvider] && availability[altProvider]) {
+    await switchQrProvider(altProvider);
+    return;
+  }
+
+  render();
+}
+
 async function handleInvoiceWatchEvent(event) {
   if (!state.watchLatest) return;
 
   try {
-    let invoice = event.invoice;
+    // Fonepay and NepalPay can use different POS credit columns, so each
+    // provider's amount must be fetched with its own column — a single
+    // shared fetch would silently apply the wrong provider's amount.
+    const [fonepayInvoice, nepalpayInvoice] = await Promise.all([
+      fetchInvoiceForColumn(event, providerPosCreditColumn("fonepay")),
+      fetchInvoiceForColumn(event, providerPosCreditColumn("nepalpay")),
+    ]);
 
-    if (!invoice && event.vchCode) {
-      invoice = await getInvoiceByVchCode(event.vchCode, activePosCreditColumn());
-    }
-
-    if (!invoice) {
-      invoice = await getInvoice(event.invoiceNo, activePosCreditColumn());
-    }
+    const invoice =
+      (state.qrProvider === "nepalpay" ? nepalpayInvoice : fonepayInvoice) ||
+      fonepayInvoice ||
+      nepalpayInvoice ||
+      event.invoice;
 
     if (!invoice?.invoiceNo || invoiceKey(invoice) === state.knownLatestInvoiceNo) {
       return;
@@ -324,7 +427,15 @@ async function handleInvoiceWatchEvent(event) {
     state.invoices = [invoice];
     state.selectedInvoiceKey = invoiceKey(invoice);
     state.error = "";
-    await openInvoicePopup(invoice);
+    const usableProviders = [];
+    if (invoiceHasUsableQrAmount(fonepayInvoice, "fonepay")) usableProviders.push("fonepay");
+    if (invoiceHasUsableQrAmount(nepalpayInvoice, "nepalpay")) usableProviders.push("nepalpay");
+
+    if (usableProviders.length > 0) {
+      await openInvoicePopup(invoice, usableProviders);
+    } else {
+      state.error = `No payable QR amount for invoice ${invoice.invoiceNo}.`;
+    }
     render();
   } catch (error) {
     state.error = errorMessage(error);
@@ -506,9 +617,14 @@ async function drawQr(invoice) {
   const payload = await getInvoiceQrPayload(invoice, shouldGenerate);
 
   if (payload) {
-    if (payload.provider === "nepalpay") {
-      ensureNepalPayStompSocket(invoice, payload);
-    } else {
+    console.log("[QR] Render payload", {
+      invoiceNo: invoice.invoiceNo,
+      provider: payload.provider,
+      key,
+      hasQrText: Boolean(payload.qrText),
+      hasImage: Boolean(payload.imageDataUrl),
+    });
+    if (payload.provider === "fonepay") {
       ensureFonepayPaymentSocket(invoice, payload);
     }
   }
@@ -533,12 +649,51 @@ async function drawQr(invoice) {
   clearCanvas(canvas);
 }
 
+function getCachedQrPayload(key) {
+  if (state.qrPayloads[key]) {
+    return state.qrPayloads[key];
+  }
+
+  try {
+    const persistedPayloads = loadQrPayloads();
+    const persistedPayload = persistedPayloads[key];
+    if (persistedPayload) {
+      state.qrPayloads[key] = persistedPayload;
+      return persistedPayload;
+    }
+  } catch {
+    // Ignore storage read failures and fall back to the in-memory cache.
+  }
+
+  return null;
+}
+
+function removeQrPayloadForInvoice(invoice, provider = state?.qrProvider ?? "fonepay") {
+  const key = qrPayloadKeyForProvider(invoice, provider);
+  if (!key) return;
+
+  if (state.qrPayloads[key] !== undefined) {
+    delete state.qrPayloads[key];
+  }
+
+  try {
+    const persistedPayloads = loadQrPayloads();
+    if (persistedPayloads[key] !== undefined) {
+      delete persistedPayloads[key];
+      saveQrPayloads(persistedPayloads);
+    }
+  } catch {
+    // Ignore persistence failures.
+  }
+}
+
 async function getInvoiceQrPayload(invoice, shouldGenerate = false) {
   const key = qrPayloadKey(invoice);
   if (!key) return null;
 
-  if (state.qrPayloads[key]) {
-    return state.qrPayloads[key];
+  const cachedPayload = getCachedQrPayloadForInvoice(invoice);
+  if (cachedPayload) {
+    return cachedPayload;
   }
 
   if (shouldGenerate && !state.qrLoadingKeys[key] && acquireQrGenerationLock(key)) {
@@ -550,8 +705,25 @@ async function getInvoiceQrPayload(invoice, shouldGenerate = false) {
 }
 
 async function generateInvoiceQr(invoice, key) {
+  const provider = state.qrProvider;
+  const targetKey = key;
   const amount = parseFloat(invoice.netAmount ?? "0");
-  const posColumn = (state.qrProvider === "nepalpay"
+
+  if (!invoiceHasUsableQrAmount(invoice, provider)) {
+    console.warn(`[QR] BLOCKED — no usable POS amount for invoice ${invoice.invoiceNo} provider=${provider}`);
+    delete state.qrLoadingKeys[targetKey];
+    releaseQrGenerationLock(targetKey);
+    render();
+    return;
+  }
+
+  if (getCachedQrPayload(targetKey)) {
+    delete state.qrLoadingKeys[targetKey];
+    releaseQrGenerationLock(targetKey);
+    render();
+    return;
+  }
+  const posColumn = (provider === "nepalpay"
     ? state.nepalPaySettings?.posCreditColumn
     : state.fonepaySettings?.posCreditColumn
   )?.trim() || state.busySettings?.posCreditColumn?.trim();
@@ -560,7 +732,7 @@ async function generateInvoiceQr(invoice, key) {
 
   console.log("[QR] generateInvoiceQr", {
     invoiceNo: invoice.invoiceNo,
-    provider: state.qrProvider,
+    provider,
     netAmount: invoice.netAmount,
     parsedAmount: amount,
     amountSource: invoice.amountSource,
@@ -571,22 +743,22 @@ async function generateInvoiceQr(invoice, key) {
   // POS column is mandatory — never fall back to net amount
   if (!posColumn) {
     console.warn("[QR] BLOCKED — POS Amount Column not configured in settings");
-    delete state.qrLoadingKeys[key];
-    releaseQrGenerationLock(key);
+    delete state.qrLoadingKeys[targetKey];
+    releaseQrGenerationLock(targetKey);
     render();
     return;
   }
   if (invoice.amountSource === "Invoice net amount") {
     console.warn(`[QR] BLOCKED — amountSource is 'Invoice net amount' (POS column '${posColumn}' returned no data for this invoice)`);
-    delete state.qrLoadingKeys[key];
-    releaseQrGenerationLock(key);
+    delete state.qrLoadingKeys[targetKey];
+    releaseQrGenerationLock(targetKey);
     render();
     return;
   }
   if (!amount || amount <= 0) {
     console.warn(`[QR] BLOCKED — parsed amount is ${amount} (netAmount = ${invoice.netAmount})`);
-    delete state.qrLoadingKeys[key];
-    releaseQrGenerationLock(key);
+    delete state.qrLoadingKeys[targetKey];
+    releaseQrGenerationLock(targetKey);
     render();
     return;
   }
@@ -594,7 +766,7 @@ async function generateInvoiceQr(invoice, key) {
   try {
     let payload;
 
-    if (state.qrProvider === "nepalpay") {
+    if (provider === "nepalpay") {
       console.log("[QR] Calling Nepal Pay QR API", { billNumber: invoice.invoiceNo, transactionAmount: String(invoice.netAmount) });
       payload = await generateNepalPayInvoiceQr(invoice);
       console.log("[QR] Nepal Pay QR API response", { qrText: payload?.qrText ? "(present)" : "(missing)", validationTraceId: payload?.validationTraceId });
@@ -604,17 +776,31 @@ async function generateInvoiceQr(invoice, key) {
       console.log("[QR] Fonepay QR API response", { qrText: payload?.qrText ? "(present)" : "(missing)", imageDataUrl: payload?.imageDataUrl ? "(present)" : "(missing)" });
     }
 
-    state.qrPayloads[key] = await persistQrSnapshot(payload);
+    if (state.qrProvider !== provider) {
+      console.log("[QR] Ignoring stale QR result after provider switch", {
+        invoiceNo: invoice.invoiceNo,
+        startedWith: provider,
+        currentProvider: state.qrProvider,
+      });
+      return;
+    }
+
+    const persistedPayload = await persistQrSnapshot(payload);
+    state.qrPayloads[targetKey] = persistedPayload;
     saveQrPayloads(state.qrPayloads);
     state.error = "";
+
+    if (provider === "nepalpay" && persistedPayload?.qrText && persistedPayload?.validationTraceId) {
+      ensureNepalPayStompSocket(invoice, persistedPayload);
+    }
   } catch (error) {
-    console.error("[QR] QR generation failed", { provider: state.qrProvider, invoiceNo: invoice.invoiceNo, error: String(error) });
+    console.error("[QR] QR generation failed", { provider, invoiceNo: invoice.invoiceNo, error: String(error) });
     state.error = isDuplicateQrGenerationError(error)
       ? `QR already generated for invoice ${invoice.invoiceNo}.`
       : errorMessage(error);
   } finally {
-    delete state.qrLoadingKeys[key];
-    releaseQrGenerationLock(key);
+    delete state.qrLoadingKeys[targetKey];
+    releaseQrGenerationLock(targetKey);
     render();
   }
 }
@@ -752,7 +938,7 @@ function render() {
             <div><strong>${state.fonepaySettings?.merchantCode ? "✓" : "—"}</strong><span>Fonepay</span></div>
             <div><strong>${state.nepalPaySettings?.merchantId ? "✓" : "—"}</strong><span>NepalPay</span></div>
             <div><strong>${state.notificationsEnabled ? "On" : "Off"}</strong><span>Alerts</span></div>
-            <button id="openBusySettings" class="secondary-button" type="button">Settings</button>
+            <!-- <button id="openBusySettings" class="secondary-button" type="button">Settings</button> -->
           </div>
         </header>
 
@@ -775,7 +961,7 @@ function render() {
 
 function renderInvoicePopup(invoice) {
   const qrKey = qrPayloadKey(invoice);
-  const hasQrPayload = Boolean(state.qrPayloads[qrKey]);
+  const hasQrPayload = Boolean(getCachedQrPayloadForInvoice(invoice));
   const hasAmount = parseFloat(invoice?.netAmount ?? "0") > 0;
   const providerLabel = state.qrProvider === "nepalpay" ? "Nepal Pay" : "Fonepay";
   const providerColor = state.qrProvider === "nepalpay" ? "#c0392b" : "#1b6b68";
@@ -846,9 +1032,16 @@ function renderQrStage(invoice) {
     `;
   }
 
+  // Check both providers' amounts up front — and before any early return —
+  // so that if the active provider has no usable amount but the other one
+  // does, we auto-switch instead of getting stuck on a dead-end message.
+  ensureProviderAvailabilityChecked(invoice);
+  const availability = state.qrProviderAvailability[invoiceKey(invoice)];
+  const bothProvidersUsable = Boolean(availability?.fonepay && availability?.nepalpay);
+
   const qrKey = qrPayloadKey(invoice);
   const isQrLoading = Boolean(state.qrLoadingKeys[qrKey]);
-  const hasQrPayload = Boolean(state.qrPayloads[qrKey]);
+  const hasQrPayload = Boolean(getCachedQrPayloadForInvoice(invoice));
   const posColumn = (state.qrProvider === "nepalpay"
     ? state.nepalPaySettings?.posCreditColumn
     : state.fonepaySettings?.posCreditColumn
@@ -873,15 +1066,19 @@ function renderQrStage(invoice) {
   const providerLabel = state.qrProvider === "nepalpay" ? "Nepal Pay" : "Fonepay";
   const altProvider = state.qrProvider === "nepalpay" ? "fonepay" : "nepalpay";
   const altLabel = altProvider === "nepalpay" ? "Nepal Pay" : "Fonepay";
+  const providerLogo = state.qrProvider === "nepalpay" ? "/cips_logo.png" : "/fonepay.webp";
 
   return `
     <div class="qr-stage">
       <div class="qr-provider-bar">
         <span class="qr-provider-active">${escapeHtml(providerLabel)}</span>
-        <button id="switchQrProvider" class="secondary-button" type="button" data-provider="${escapeHtml(altProvider)}">
+        ${bothProvidersUsable
+          ? `<button id="switchQrProvider" class="secondary-button" type="button" data-provider="${escapeHtml(altProvider)}">
           Switch to ${escapeHtml(altLabel)}
-        </button>
+        </button>`
+          : ""}
       </div>
+      <img class="qr-provider-logo" src="${providerLogo}" alt="${escapeHtml(providerLabel)}" />
       <canvas id="qrCanvas" width="280" height="280"></canvas>
       ${isQrLoading ? `<p class="qr-status">Generating ${escapeHtml(providerLabel)} QR…</p>` : ""}
       ${hasQrPayload && !isQrLoading
@@ -893,7 +1090,6 @@ function renderQrStage(invoice) {
         ${state.qrProvider === "fonepay" ? `<button id="verifyPayment" class="secondary-button" type="button">Verify Payment</button>` : ""}
         <button id="downloadQr" type="button" ${hasQrPayload ? "" : "disabled"}>Download PNG</button>
         <button id="copyQrUrl" type="button" ${hasQrPayload ? "" : "disabled"}>Copy QR</button>
-        <button id="regenerateQr" class="secondary-button" type="button">New QR</button>
       </div>
     </div>
   `;
@@ -978,10 +1174,6 @@ function renderInvoiceDetails(invoice) {
       <div class="url-box">
         <span>Payment status</span>
         <code>${escapeHtml(invoice.paymentStatus ?? "-")}</code>
-      </div>
-      <div class="url-box">
-        <span>Dynamic invoice URL</span>
-        <code>${escapeHtml(dynamicInvoiceUrl(invoice))}</code>
       </div>
     </div>
   `;
@@ -1265,33 +1457,16 @@ function bindEvents() {
   document.querySelector("#closeSuccess")?.addEventListener("click", closeSuccessPopup);
 
   document.querySelector("#switchQrProvider")?.addEventListener("click", (event) => {
-    const newProvider = event.currentTarget.dataset.provider;
-    // Close any active Nepal Pay socket before switching
-    const currentInvoice = selectedInvoice();
-    if (currentInvoice) {
-      const oldKey = qrPayloadKey(currentInvoice); // key with old provider
-      closeNepalPayStompSocket(oldKey);
-    }
-    state.qrProvider = newProvider;
-    saveQrProvider(newProvider);
-    state.error = "";
-    // qrPayloadKey now includes provider, so cached QR for the new provider
-    // is preserved — only trigger generation if not already cached
-    if (currentInvoice) {
-      const newKey = qrPayloadKey(currentInvoice);
-      if (!state.qrPayloads[newKey]) {
-        releaseQrGenerationLock(newKey);
-        state.qrAutoGenerateKey = newKey;
-      }
-    }
-    render();
+    switchQrProvider(event.currentTarget.dataset.provider);
   });
 
   document.querySelector("#regenerateQr")?.addEventListener("click", () => {
     const currentInvoice = selectedInvoice();
     if (!currentInvoice) return;
     const key = qrPayloadKey(currentInvoice);
-    delete state.qrPayloads[key];
+    if (state.qrPayloads[key] !== undefined) {
+      delete state.qrPayloads[key];
+    }
     saveQrPayloads(state.qrPayloads);
     releaseQrGenerationLock(key);
     state.qrAutoGenerateKey = key;
@@ -1398,6 +1573,7 @@ async function refreshInvoiceAmounts() {
     // Clear cached QR payloads so they regenerate with fresh amounts
     state.qrPayloads = {};
     saveQrPayloads({});
+    state.qrProviderAvailability = {};
   } catch {
     // Non-critical — amounts will update on next invoice load
   }
@@ -1417,6 +1593,28 @@ function activePosCreditColumn() {
     : state.nepalPaySettings?.posCreditColumn
   )?.trim();
   return secondary || null;
+}
+
+async function refreshSelectedInvoiceForCurrentProvider() {
+  const currentInvoice = selectedInvoice();
+  if (!currentInvoice?.invoiceNo) return currentInvoice;
+
+  try {
+    const col = activePosCreditColumn();
+    const refreshedInvoice = currentInvoice.vchCode
+      ? await getInvoiceByVchCode(currentInvoice.vchCode, col)
+      : await getInvoice(currentInvoice.invoiceNo, col);
+
+    if (!refreshedInvoice) return currentInvoice;
+
+    state.invoices = state.invoices.map((item) =>
+      invoiceKey(item) === invoiceKey(refreshedInvoice) ? refreshedInvoice : item
+    );
+    state.selectedInvoiceKey = invoiceKey(refreshedInvoice);
+    return refreshedInvoice;
+  } catch {
+    return currentInvoice;
+  }
 }
 
 function loadQrProvider() {
@@ -1449,6 +1647,16 @@ function ensureNepalPayStompSocket(invoice, payload) {
   const key = qrPayloadKey(invoice);
   const wsUrl = state.nepalPaySettings?.wsUrl ?? "";
 
+  console.log("[NP-WS] ensure socket", {
+    invoiceNo: invoice?.invoiceNo,
+    key,
+    wsUrl,
+    validationTraceId: payload?.validationTraceId ?? null,
+    provider: payload?.provider ?? "nepalpay",
+  });
+  console.log(`[Payment] [NepalPay] websocket-ensure invoice=${invoice?.invoiceNo ?? "-"} url=${wsUrl || "-"} trace=${payload?.validationTraceId ?? "-"}`);
+  logPaymentStatus(`[NepalPay] websocket-ensure invoice=${invoice?.invoiceNo ?? "-"} url=${wsUrl || "-"} trace=${payload?.validationTraceId ?? "-"}`).catch(() => {});
+
   if (!key || !wsUrl || isInvoicePaid(invoice)) return;
   if (!payload.validationTraceId) return;
 
@@ -1480,13 +1688,108 @@ function ensureNepalPayStompSocket(invoice, payload) {
   _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry);
 }
 
+function normalizeNepalPayPayload(message) {
+  if (!message || typeof message !== "object") return null;
+
+  const signalFields = [
+    "status",
+    "txn_status",
+    "txnStatus",
+    "transaction_status",
+    "transactionStatus",
+    "payment_status",
+    "paymentStatus",
+    "response_status",
+    "responseStatus",
+    "state",
+    "txStatus",
+    "event",
+    "result_status",
+    "resultStatus",
+    "message",
+    "activityMessage",
+    "detail",
+    "description",
+    "debit_status",
+    "credit_status",
+    "txn_id",
+    "request_id",
+    "merchant_id",
+    "ws_id",
+    "responseMessage"
+  ];
+
+  const candidates = [
+    message,
+    message.data,
+    message.payload,
+    message.response,
+    message.result,
+    message.transaction,
+    message.details,
+    message.body,
+  ].filter((value) => value && typeof value === "object" && !Array.isArray(value));
+
+  const hasSignal = (candidate) => signalFields.some((field) => candidate[field] !== undefined && candidate[field] !== null && candidate[field] !== "");
+
+  const bestCandidate = candidates.find(hasSignal) ?? candidates[0] ?? null;
+  return bestCandidate;
+}
+
+function classifyNepalPayStatus(message) {
+  const payload = normalizeNepalPayPayload(message);
+  if (!payload) return { kind: "unknown", status: "" };
+
+  const rawStatus = [
+    payload.status,
+    payload.txn_status,
+    payload.txnStatus,
+    payload.transaction_status,
+    payload.transactionStatus,
+    payload.payment_status,
+    payload.paymentStatus,
+    payload.response_status,
+    payload.responseStatus,
+    payload.state,
+    payload.txStatus,
+    payload.event,
+    payload.result_status,
+    payload.resultStatus,
+    payload.code,
+    payload.response_code,
+    payload.responseCode,
+  ]
+    .filter((value) => value !== undefined && value !== null && value !== "")
+    .map((value) => String(value).trim())[0];
+
+  const normalized = rawStatus ? rawStatus.toUpperCase() : "";
+  const lowered = normalized.toLowerCase();
+  const messageText = String(payload.message ?? payload.activityMessage ?? payload.detail ?? payload.description ?? "").trim().toLowerCase();
+
+  if (["ENTR", "PARSED"].includes(normalized)) {
+    return { kind: "progress", status: normalized };
+  }
+
+  if (["COMPLETED", "SUCCESS", "SUCCESSFUL", "PAID", "PAYMENT_SUCCESS", "PAYMENT_COMPLETED", "TRANSACTION_COMPLETED", "DONE", "OK", "APPROVED"].includes(normalized) || lowered.includes("complete") || lowered.includes("success") || lowered.includes("paid") || lowered.includes("approved") || messageText.includes("completed") || messageText.includes("success") || messageText.includes("paid")) {
+    return { kind: "success", status: normalized || "SUCCESS" };
+  }
+
+  if (["FAILED", "FAILURE", "DECLINED", "REJECTED", "ERROR", "CANCELLED", "CANCELED", "TIMEOUT", "EXPIRED"].includes(normalized) || lowered.includes("fail") || lowered.includes("error") || lowered.includes("cancel") || messageText.includes("fail") || messageText.includes("error") || messageText.includes("cancel")) {
+    return { kind: "failure", status: normalized || "FAILED" };
+  }
+
+  return { kind: "unknown", status: normalized };
+}
+
 function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
   console.log("[NP-WS] Connecting", { wsUrl, invoiceNo: invoice.invoiceNo, retryCount: entry.retryCount });
   const socket = new WebSocket(wsUrl);
   entry.socket = socket;
 
   socket.onopen = () => {
-    console.log("[NP-WS] Connected — sending STOMP CONNECT");
+    console.log("[NP-WS] Connected — sending STOMP CONNECT", { invoiceNo: invoice.invoiceNo, wsUrl });
+    console.log(`[Payment] [NepalPay] websocket-open invoice=${invoice.invoiceNo} url=${wsUrl}`);
+    logPaymentStatus(`[NepalPay] websocket-open invoice=${invoice.invoiceNo} url=${wsUrl}`).catch(() => {});
     stompSend(socket, "CONNECT", { "accept-version": "1.2", "heart-beat": "0,0" }, "");
   };
 
@@ -1494,7 +1797,9 @@ function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
     const frame = stompParse(event.data);
     if (!frame) { console.warn("[NP-WS] Could not parse frame:", event.data); return; }
 
-    console.log("[NP-WS] Frame received", { command: frame.command, bodyPreview: frame.body?.slice(0, 120) });
+    console.log("[NP-WS] Frame received", { command: frame.command, bodyPreview: frame.body?.slice(0, 120), invoiceNo: invoice.invoiceNo });
+    console.log(`[Payment] [NepalPay] websocket-frame invoice=${invoice.invoiceNo} command=${frame.command}`);
+    logPaymentStatus(`[NepalPay] websocket-frame invoice=${invoice.invoiceNo} command=${frame.command}`).catch(() => {});
 
     if (frame.command === "CONNECTED") {
       console.log("[NP-WS] STOMP CONNECTED — subscribing and sending transaction request");
@@ -1504,17 +1809,19 @@ function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
       }, "");
 
       const body = JSON.stringify({
-        merchant_id: state.nepalPaySettings?.merchantId ?? "",
+        merchant_id: "Terminal1",
         request_id: payload.validationTraceId,
         username: state.nepalPaySettings?.wsUsername ?? "",
         api_token: state.nepalPaySettings?.wsApiToken ?? ""
       });
       console.log("[NP-WS] SEND payload", {
-        merchant_id: state.nepalPaySettings?.merchantId ?? "(missing)",
+        merchant_id: "Terminal1",
         request_id: payload.validationTraceId,
         username: state.nepalPaySettings?.wsUsername ? "(set)" : "(missing)",
         api_token: state.nepalPaySettings?.wsApiToken ? "(set)" : "(missing)",
       });
+      console.log("[NP-WS] SEND payload (raw body)", { invoiceNo: invoice.invoiceNo, body });
+      logPaymentStatus(`[NepalPay] outbound-payload invoice=${invoice.invoiceNo} body=${body}`).catch(() => {});
       stompSend(socket, "SEND", { destination: "/nqrws/check-txn-status", "content-type": "application/json" }, body);
       return;
     }
@@ -1530,12 +1837,25 @@ function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
     if (!current || current.handled) return;
 
     const message = parseJsonMaybe(frame.body);
-    if (!message) { console.warn("[NP-WS] MESSAGE body is not valid JSON:", frame.body); return; }
+    const rawMessagePreview = typeof frame.body === "string" ? frame.body.slice(0, 800) : frame.body;
+    console.log(`[Payment] [NepalPay] websocket-message invoice=${invoice.invoiceNo} body=${rawMessagePreview}`);
+    logPaymentStatus(`[NepalPay] websocket-message invoice=${invoice.invoiceNo} body=${rawMessagePreview}`).catch(() => {});
+    console.log("[NP-WS] Incoming payload", {
+      invoiceNo: invoice.invoiceNo,
+      rawBody: frame.body,
+      parsedPayload: message,
+    });
 
-    const status = String(message.status ?? "").toUpperCase();
+    if (!message || typeof message !== "object") {
+      console.warn("[NP-WS] MESSAGE body is not valid JSON:", frame.body);
+      return;
+    }
+
+    const statusInfo = classifyNepalPayStatus(message);
+    const status = statusInfo.status;
     console.log("[NP-WS] Payment event received", { status, fullMessage: message });
 
-    if (status === "ENTR") {
+    if (statusInfo.kind === "progress") {
       // Phase: QR Parsing — customer established WS connection
       console.log("[NP-WS] ENTR — connection established", {
         merchant_id: message.merchant_id,
@@ -1543,12 +1863,12 @@ function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
         ws_id: message.ws_id,
         activityMessage: message.message,
       });
-      current.status = "entr";
+      current.status = status === "PARSED" ? "parsed" : "entr";
       render();
       return;
     }
 
-    if (status === "PARSED") {
+    if (statusInfo.kind === "progress" && status === "PARSED") {
       // Phase: QR Parsing — customer scanned the QR code
       console.log("[NP-WS] PARSED — QR scanned by customer", {
         merchant_id: message.merchant_id,
@@ -1561,7 +1881,7 @@ function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
       return;
     }
 
-    if (status === "COMPLETED") {
+    if (statusInfo.kind === "success") {
       // Phase: QR Transaction — debit_status 000 = success, rest = failed
       // credit_status 000/999/DEFER = success, rest = failed
       const debitStatus = String(message.debit_status ?? "");
@@ -1589,6 +1909,8 @@ function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
       if (!debitSuccess) {
         console.warn("[NP-WS] COMPLETED — debit failed", { debitStatus, creditStatus, activityMessage });
         current.status = "failed";
+        const failureLog = `[NepalPay] invoice=${invoice.invoiceNo} status=failed reason=${encodeURIComponent(activityMessage || `debit_status:${debitStatus}`)} debit=${debitStatus} credit=${creditStatus}`;
+        await logPaymentStatus(failureLog).catch(() => {});
         notifyFonepayPaymentOutcome("failure", invoice.invoiceNo, activityMessage || `debit_status: ${debitStatus}`);
         closeNepalPayStompSocket(key);
         render();
@@ -1596,9 +1918,13 @@ function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
       }
 
       current.status = "completed";
-      console.log("[NP-WS] Payment success — marking invoice paid", { txnId, creditStatus, activityMessage });
+      console.log("[NP-WS] Payment success — marking invoice paid", { txnId, creditStatus, activityMessage, invoiceNo: invoice.invoiceNo });
+      console.log(`[Payment] [NepalPay] payment-success invoice=${invoice.invoiceNo} txn=${txnId || "-"} status=${debitStatus}/${creditStatus}`);
+      logPaymentStatus(`[NepalPay] payment-success invoice=${invoice.invoiceNo} txn=${txnId || "-"} status=${debitStatus}/${creditStatus}`).catch(() => {});
 
       try {
+        const successLog = `[NepalPay] invoice=${invoice.invoiceNo} status=success txnId=${txnId || "-"} activity=${activityMessage || "-"} debit=${debitStatus} credit=${creditStatus}`;
+        await logPaymentStatus(successLog).catch(() => {});
         const updatedInvoice = await markInvoicePaid(invoice.invoiceNo, txnId || undefined);
         if (updatedInvoice) {
           state.invoices = state.invoices.map((item) =>
@@ -1606,6 +1932,7 @@ function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
           );
           state.successMessage = `Nepal Pay payment received. Invoice ${updatedInvoice.invoiceNo} marked as Paid.`;
           state.error = "";
+          removeQrPayloadForInvoice(invoice, "nepalpay");
           localStorage.setItem(
             PAYMENT_UPDATE_STORAGE_KEY,
             JSON.stringify({
@@ -1633,7 +1960,7 @@ function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
       return;
     }
 
-    if (status === "FAILED") {
+    if (statusInfo.kind === "failure") {
       // Phase: QR Transaction — payment failed
       const activityMessage = String(message.message ?? "Payment failed").trim();
       const debitStatus = String(message.debit_status ?? "");
@@ -1649,6 +1976,8 @@ function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
       current.handled = true;
       current.status = "failed";
       _clearNepalPayTimers(current);
+      const failureLog = `[NepalPay] invoice=${invoice.invoiceNo} status=failed reason=${encodeURIComponent(activityMessage)} debit=${debitStatus} credit=${creditStatus}`;
+      await logPaymentStatus(failureLog).catch(() => {});
       notifyFonepayPaymentOutcome("failure", invoice.invoiceNo, activityMessage);
       closeNepalPayStompSocket(key);
       render();
@@ -1660,6 +1989,8 @@ function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
 
   socket.onerror = (event) => {
     console.error("[NP-WS] WebSocket error", { invoiceNo: invoice.invoiceNo, wsUrl });
+    console.log(`[Payment] [NepalPay] websocket-error invoice=${invoice.invoiceNo} url=${wsUrl}`);
+    logPaymentStatus(`[NepalPay] websocket-error invoice=${invoice.invoiceNo} url=${wsUrl}`).catch(() => {});
     const current = nepalPayStompSockets.get(key);
     if (!current || current.handled) return;
     current.status = "error";
@@ -1668,6 +1999,8 @@ function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
 
   socket.onclose = (event) => {
     console.log("[NP-WS] WebSocket closed", { code: event.code, reason: event.reason, invoiceNo: invoice.invoiceNo });
+    console.log(`[Payment] [NepalPay] websocket-closed invoice=${invoice.invoiceNo} code=${event.code}`);
+    logPaymentStatus(`[NepalPay] websocket-closed invoice=${invoice.invoiceNo} code=${event.code}`).catch(() => {});
     const current = nepalPayStompSockets.get(key);
     if (!current || current.handled) {
       if (current?.socket === socket) nepalPayStompSockets.delete(key);
@@ -1953,6 +2286,7 @@ function ensureFonepayPaymentSocket(invoice, payload) {
           );
           state.error = "";
           state.successMessage = `Payment received. Invoice ${updatedInvoice.invoiceNo} marked as Paid.`;
+          removeQrPayloadForInvoice(invoice, "fonepay");
           localStorage.setItem(
             PAYMENT_UPDATE_STORAGE_KEY,
             JSON.stringify({ invoiceNo: updatedInvoice.invoiceNo, status: "Paid", at: Date.now() })
