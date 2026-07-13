@@ -938,7 +938,9 @@ function render() {
             <div><strong>${state.fonepaySettings?.merchantCode ? "✓" : "—"}</strong><span>Fonepay</span></div>
             <div><strong>${state.nepalPaySettings?.merchantId ? "✓" : "—"}</strong><span>NepalPay</span></div>
             <div><strong>${state.notificationsEnabled ? "On" : "Off"}</strong><span>Alerts</span></div>
-            <!-- <button id="openBusySettings" class="secondary-button" type="button">Settings</button> -->
+            ${state.busySettings?.showSetting !== false
+              ? `<button id="openBusySettings" class="secondary-button" type="button">Settings</button>`
+              : ""}
           </div>
         </header>
 

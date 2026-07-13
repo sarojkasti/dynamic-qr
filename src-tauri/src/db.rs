@@ -138,7 +138,13 @@ impl BusyDb {
         })
     }
 
-    pub fn save_settings(&self, settings: BusySettings) -> Result<BusySettingsState, String> {
+    pub fn save_settings(&self, mut settings: BusySettings) -> Result<BusySettingsState, String> {
+        // show_setting is a hidden, hand-edited flag not exposed in the
+        // settings form — preserve whatever is already on disk instead of
+        // letting a form save (which never sends this field) wipe it out.
+        if let Ok(current) = self.settings() {
+            settings.show_setting = current.show_setting;
+        }
         validate_settings(&settings)?;
         let path = settings_file_path()?;
         write_settings_file(&settings, &path)?;
@@ -205,6 +211,7 @@ impl BusySettings {
             settlement_credit_mode_name: None,
             pos_credit_column: None,
             db_type: None,
+            show_setting: None,
         }
     }
 }

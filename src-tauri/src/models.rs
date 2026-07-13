@@ -44,6 +44,10 @@ pub struct BusySettings {
     pub pos_credit_column: Option<String>,
     #[serde(default)]
     pub db_type: Option<String>,
+    // Hidden flag, not exposed in the settings UI — edit busy-settings.json
+    // by hand to toggle whether the Settings button is shown.
+    #[serde(default)]
+    pub show_setting: Option<bool>,
 }
 
 fn default_payment_transaction_id_column() -> String {
