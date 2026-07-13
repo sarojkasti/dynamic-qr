@@ -88,14 +88,10 @@ label {
 }
 
 .brand-mark {
-  display: grid;
   width: 46px;
   height: 46px;
-  place-items: center;
   border-radius: 8px;
-  color: #ffffff;
-  background: #23395d;
-  font-weight: 800;
+  object-fit: contain;
 }
 
 .brand h1,
@@ -308,6 +304,12 @@ label {
   border-radius: 8px;
   padding: 28px;
   background: #ffffff;
+}
+
+.paid-badge {
+  max-width: 160px;
+  max-height: 160px;
+  object-fit: contain;
 }
 
 .badge-ok {
@@ -527,6 +529,13 @@ label {
   align-items: start;
   justify-content: space-between;
   gap: 14px;
+}
+
+.popup-logo {
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  object-fit: contain;
 }
 
 .popup-header h1,

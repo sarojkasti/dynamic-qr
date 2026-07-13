@@ -891,7 +891,7 @@ function render() {
     <section class="shell">
       <aside class="sidebar">
         <div class="brand">
-          <span class="brand-mark">QR</span>
+          <img class="brand-mark" src="/logo.png" alt="BusyPay QR" />
           <div>
             <h1>BusyPay QR</h1>
             <p>Busy ODBC desktop</p>
@@ -969,6 +969,7 @@ function renderInvoicePopup(invoice) {
   document.querySelector("#app").innerHTML = `
     <section class="popup-shell">
       <header class="popup-header">
+        <img class="popup-logo" src="/logo.png" alt="BusyPay QR" />
         <div>
           <p class="eyebrow" style="color:${providerColor};font-weight:700;">${escapeHtml(providerLabel)}</p>
           <h1>${invoice ? escapeHtml(invoice.invoiceNo) : "Invoice"}</h1>
@@ -1026,7 +1027,7 @@ function renderQrStage(invoice) {
   if (isInvoicePaid(invoice)) {
     return `
       <div class="qr-stage paid-stage">
-        <div class="paid-badge">Paid</div>
+        <img class="paid-badge" src="/paid.png" alt="Paid" />
         <p class="qr-status">Invoice ${escapeHtml(invoice.invoiceNo)} has been paid.</p>
       </div>
     `;
