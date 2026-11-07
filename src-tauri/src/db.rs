@@ -230,6 +230,7 @@ impl BusyDb {
         let table = checked_identifier(&settings.invoice_table)?;
         let status_table = checked_identifier(&settings.payment_status_table)?;
         let status_column = checked_column_identifier(&settings.payment_status_column)?;
+        let txn_id_column = checked_column_identifier(&settings.payment_transaction_id_column)?;
         let dialect = DbDialect::from_settings(&settings);
         let effective_col = pos_credit_column.or(settings.pos_credit_column.as_deref());
         eprintln!("[DB] get_invoice_by_id: invoice_no={} effective_col={:?} override={:?} settings_col={:?}", invoice_no, effective_col, pos_credit_column, settings.pos_credit_column);
@@ -243,6 +244,7 @@ impl BusyDb {
             dialect.coalesce_nonempty(&["m.PrintName", "m.Name"], &cast_mastercode);
         let status_expr =
             dialect.coalesce_nonempty(&[&format!("oi.[{status_column}]")], &cast_vchtype);
+        let txn_expr = format!("oi.[{txn_id_column}]");
         let trim_vchno = dialect.trim("t.VchNo");
         let trim_param = dialect.trim("?");
         let from_clause = dialect.two_left_joins(
@@ -259,7 +261,8 @@ impl BusyDb {
                     {party_name_expr}, \
                     {amount_value}, \
                     {amount_source}, \
-                    {status_expr} \
+                    {status_expr}, \
+                    {txn_expr} \
              FROM {from_clause} \
              WHERE {trim_vchno} = {trim_param} AND t.Cancelled = 0 AND t.VchType = ? \
              ORDER BY t.Date DESC, t.VchCode DESC"
@@ -288,6 +291,7 @@ impl BusyDb {
         let table = checked_identifier(&settings.invoice_table)?;
         let status_table = checked_identifier(&settings.payment_status_table)?;
         let status_column = checked_column_identifier(&settings.payment_status_column)?;
+        let txn_id_column = checked_column_identifier(&settings.payment_transaction_id_column)?;
         let dialect = DbDialect::from_settings(&settings);
         let effective_col = pos_credit_column.or(settings.pos_credit_column.as_deref());
         eprintln!("[DB] get_invoice_by_vch_code: vch_code={} effective_col={:?}", vch_code, effective_col);
@@ -301,6 +305,7 @@ impl BusyDb {
             dialect.coalesce_nonempty(&["m.PrintName", "m.Name"], &cast_mastercode);
         let status_expr =
             dialect.coalesce_nonempty(&[&format!("oi.[{status_column}]")], &cast_vchtype);
+        let txn_expr = format!("oi.[{txn_id_column}]");
         let from_clause = dialect.two_left_joins(
             &format!("{table} t"),
             "Master1 m", "m.Code = t.MasterCode1",
@@ -315,7 +320,8 @@ impl BusyDb {
                     {party_name_expr}, \
                     {amount_value}, \
                     {amount_source}, \
-                    {status_expr} \
+                    {status_expr}, \
+                    {txn_expr} \
              FROM {from_clause} \
              WHERE t.VchCode = ? AND t.Cancelled = 0 AND t.VchType = ?"
         );
@@ -343,6 +349,7 @@ impl BusyDb {
         let table = checked_identifier(&settings.invoice_table)?;
         let status_table = checked_identifier(&settings.payment_status_table)?;
         let status_column = checked_column_identifier(&settings.payment_status_column)?;
+        let txn_id_column = checked_column_identifier(&settings.payment_transaction_id_column)?;
         let dialect = DbDialect::from_settings(&settings);
         let effective_col = pos_credit_column.or(settings.pos_credit_column.as_deref());
         eprintln!("[DB] get_latest_invoices: effective_col={:?} override={:?} settings_col={:?} db_type={:?}", effective_col, pos_credit_column, settings.pos_credit_column, settings.db_type);
@@ -356,6 +363,7 @@ impl BusyDb {
             dialect.coalesce_nonempty(&["m.PrintName", "m.Name"], &cast_mastercode);
         let status_expr =
             dialect.coalesce_nonempty(&[&format!("oi.[{status_column}]")], &cast_vchtype);
+        let txn_expr = format!("oi.[{txn_id_column}]");
         let vchno_nonempty = dialect.nonempty_condition("t.VchNo");
         let from_clause = dialect.two_left_joins(
             &format!("{table} t"),
@@ -372,7 +380,8 @@ impl BusyDb {
                     {party_name_expr}, \
                     {amount_value}, \
                     {amount_source}, \
-                    {status_expr} \
+                    {status_expr}, \
+                    {txn_expr} \
              FROM {from_clause} \
              WHERE t.Cancelled = 0 \
                AND t.VchType = {voucher_type} \
@@ -388,6 +397,7 @@ impl BusyDb {
         &self,
         invoice_no: String,
         transaction_id: Option<String>,
+        provider: Option<String>,
     ) -> Result<Option<Invoice>, String> {
         let settings = self.settings()?;
         let table = checked_identifier(&settings.invoice_table)?;
@@ -398,6 +408,16 @@ impl BusyDb {
         let transaction_id = transaction_id
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
+        // Encode the provider as a short prefix on the existing transaction-id
+        // column value ("NP:<txn>" / "FP:<txn>" / "MANUAL") so the payment method
+        // survives alongside the txn ID without a schema change — kept compact
+        // since Busy's transaction-id column may be a narrow fixed-width field.
+        let transaction_id = match provider.as_deref().map(str::trim) {
+            Some("nepalpay") => Some(format!("NP:{}", transaction_id.clone().unwrap_or_default())),
+            Some("fonepay") => Some(format!("FP:{}", transaction_id.clone().unwrap_or_default())),
+            Some("manual") => Some("MANUAL".to_string()),
+            _ => transaction_id,
+        };
 
         if transaction_id.is_some() && status_column.eq_ignore_ascii_case(&txn_id_column) {
             return Err(format!(
@@ -533,6 +553,7 @@ impl BusyDb {
         let table = checked_identifier(&settings.invoice_table)?;
         let status_table = checked_identifier(&settings.payment_status_table)?;
         let status_column = checked_column_identifier(&settings.payment_status_column)?;
+        let txn_id_column = checked_column_identifier(&settings.payment_transaction_id_column)?;
         let dialect = DbDialect::from_settings(&settings);
         let effective_col = pos_credit_column.or(settings.pos_credit_column.as_deref());
         eprintln!("[DB] search_invoice: effective_col={:?}", effective_col);
@@ -546,6 +567,7 @@ impl BusyDb {
             dialect.coalesce_nonempty(&["m.PrintName", "m.Name"], &cast_mastercode);
         let status_expr =
             dialect.coalesce_nonempty(&[&format!("oi.[{status_column}]")], &cast_vchtype);
+        let txn_expr = format!("oi.[{txn_id_column}]");
         let trim_vchno = dialect.trim("t.VchNo");
         let from_clause = dialect.two_left_joins(
             &format!("{table} t"),
@@ -561,7 +583,8 @@ impl BusyDb {
                     {party_name_expr}, \
                     {amount_value}, \
                     {amount_source}, \
-                    {status_expr} \
+                    {status_expr}, \
+                    {txn_expr} \
              FROM {from_clause} \
              WHERE t.Cancelled = 0 \
                AND t.VchType = ? \
@@ -832,17 +855,54 @@ fn collect_invoices(cursor: &mut impl Cursor) -> Result<Vec<Invoice>, String> {
 }
 
 fn read_invoice_row(mut row: odbc_api::CursorRow<'_>) -> Result<Invoice, String> {
+    // SQLGetData (used by read_text) requires strictly ascending column order —
+    // reading out of order raises "Invalid Descriptor Index" on some drivers.
+    let vch_code = read_text(&mut row, 1)?.and_then(|value| value.parse::<i32>().ok());
+    let vch_series_code = read_text(&mut row, 2)?.and_then(|value| value.parse::<i32>().ok());
+    let invoice_no = read_text(&mut row, 3)?.unwrap_or_default();
+    let invoice_date = read_text(&mut row, 4)?;
+    let invoice_date_nepali = read_text(&mut row, 5)?;
+    let party_name = read_text(&mut row, 6)?;
+    let net_amount = read_text(&mut row, 7)?;
+    let amount_source = read_text(&mut row, 8)?;
+    let payment_status = read_text(&mut row, 9)?;
+    let raw_txn = read_text(&mut row, 10)?;
+    let (payment_provider, payment_txn_id) = parse_payment_meta(raw_txn);
+
     Ok(Invoice {
-        vch_code: read_text(&mut row, 1)?.and_then(|value| value.parse::<i32>().ok()),
-        vch_series_code: read_text(&mut row, 2)?.and_then(|value| value.parse::<i32>().ok()),
-        invoice_no: read_text(&mut row, 3)?.unwrap_or_default(),
-        invoice_date: read_text(&mut row, 4)?,
-        invoice_date_nepali: read_text(&mut row, 5)?,
-        party_name: read_text(&mut row, 6)?,
-        net_amount: read_text(&mut row, 7)?,
-        amount_source: read_text(&mut row, 8)?,
-        payment_status: read_text(&mut row, 9)?,
+        vch_code,
+        vch_series_code,
+        invoice_no,
+        invoice_date,
+        invoice_date_nepali,
+        party_name,
+        net_amount,
+        amount_source,
+        payment_status,
+        payment_provider,
+        payment_txn_id,
     })
+}
+
+/// Decodes the transaction-id column's value. New rows carry an "NP:"/"FP:"
+/// provider prefix or the literal "MANUAL"; rows written before this change
+/// hold a plain transaction-id string, returned as-is with no known provider.
+fn parse_payment_meta(raw: Option<String>) -> (Option<String>, Option<String>) {
+    let Some(raw) = raw.filter(|value| !value.trim().is_empty()) else {
+        return (None, None);
+    };
+
+    if raw == "MANUAL" {
+        return (Some("manual".to_string()), None);
+    }
+    if let Some(txn_id) = raw.strip_prefix("NP:") {
+        return (Some("nepalpay".to_string()), Some(txn_id.to_string()).filter(|v| !v.is_empty()));
+    }
+    if let Some(txn_id) = raw.strip_prefix("FP:") {
+        return (Some("fonepay".to_string()), Some(txn_id.to_string()).filter(|v| !v.is_empty()));
+    }
+
+    (None, Some(raw))
 }
 
 fn read_text(row: &mut odbc_api::CursorRow<'_>, column: u16) -> Result<Option<String>, String> {
@@ -1080,6 +1140,7 @@ pub fn read_fonepay_settings() -> Result<crate::models::FonepaySettings, String>
             password: String::new(),
             integration_mode: String::new(),
             pos_credit_column: String::new(),
+            report_url: String::new(),
         });
     }
 
@@ -1152,6 +1213,7 @@ pub fn read_nepalpay_settings() -> Result<crate::models::NepalPaySettings, Strin
             ws_url: String::new(),
             ws_username: String::new(),
             ws_api_token: String::new(),
+            report_url: String::new(),
         });
     }
 

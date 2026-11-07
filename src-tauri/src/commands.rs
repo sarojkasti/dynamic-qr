@@ -16,7 +16,8 @@ use crate::{
     models::{
         ApiError, BankMerchant, BusySettings, BusySettingsState, DynamicQrRequest,
         DynamicQrResponse, FonepaySettings, Invoice, NepalPayQrRequest, NepalPayQrResponse,
-        NepalPaySettings, PaymentQrStatusRequest, PaymentQrStatusResponse,
+        NepalPaySettings, NepalPayStatusRequest, NepalPayStatusResponse, PaymentQrStatusRequest,
+        PaymentQrStatusResponse,
     },
 };
 
@@ -63,8 +64,9 @@ pub fn mark_invoice_paid(
     db: State<'_, BusyDb>,
     invoice_no: String,
     transaction_id: Option<String>,
+    provider: Option<String>,
 ) -> Result<Option<Invoice>, ApiError> {
-    db.mark_invoice_paid(invoice_no, transaction_id)
+    db.mark_invoice_paid(invoice_no, transaction_id, provider)
         .map_err(ApiError::from)
 }
 
@@ -103,6 +105,7 @@ pub fn save_bank_merchant(
             password: bank.merchant_password.clone(),
             integration_mode: bank.fonepay_integration_mode.clone(),
             pos_credit_column: bank.pos_credit_column.clone(),
+            report_url: String::new(),
         };
         let _ = crate::db::write_fonepay_settings(&fonepay_settings);
     }
@@ -576,17 +579,25 @@ async fn verify_fonepay_web_payment(
         env_value(&["FONEPAY_PG_PASSWORD", "FONEPAY_PASSWORD"])?
     };
 
-    let verification_url = env_value(&["FONEPAY_WEB_VERIFICATION_URL"]).or_else(|_| {
-        let base = env::var("FONEPAY_WEB_MERCHANT_API_URL")
-            .ok()
-            .map(|value| value.trim().trim_end_matches('/').to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "https://merchantapi.fonepay.com/api".to_string());
+    let settings_report_url = settings
+        .as_ref()
+        .map(|s| s.report_url.trim().to_string())
+        .filter(|url| !url.is_empty());
+    let verification_url = if let Some(url) = settings_report_url {
+        url
+    } else {
+        env_value(&["FONEPAY_WEB_VERIFICATION_URL"]).or_else(|_| {
+            let base = env::var("FONEPAY_WEB_MERCHANT_API_URL")
+                .ok()
+                .map(|value| value.trim().trim_end_matches('/').to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "https://merchantapi.fonepay.com/api".to_string());
 
-        Ok::<String, ApiError>(format!(
-            "{base}/merchant/merchantDetailsForThirdParty/txnVerification"
-        ))
-    })?;
+            Ok::<String, ApiError>(format!(
+                "{base}/merchant/merchantDetailsForThirdParty/txnVerification"
+            ))
+        })?
+    };
     let resource = env::var("FONEPAY_WEB_VERIFICATION_RESOURCE")
         .ok()
         .map(|value| value.trim().to_string())
@@ -611,15 +622,20 @@ async fn verify_fonepay_web_payment(
     let auth_hash = hmac_sha512_hex(merchant_secret.as_bytes(), auth_message.as_bytes());
     let basic = base64_encode(format!("{username}:{password}").as_bytes());
 
+    eprintln!("[Fonepay] report API hit: endpoint={verification_url} prn={prn} merchantCode={merchant_code} amount={amount}");
+
     let response = reqwest::Client::new()
-        .post(verification_url)
+        .post(&verification_url)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .header(reqwest::header::AUTHORIZATION, format!("Basic {basic}"))
         .header("auth", auth_hash)
         .body(payload_text)
         .send()
         .await
-        .map_err(|error| ApiError::from(format!("Failed to verify Fonepay payment: {error}")))?;
+        .map_err(|error| {
+            eprintln!("[Fonepay] report API request failed: {error}");
+            ApiError::from(format!("Failed to verify Fonepay payment: {error}"))
+        })?;
 
     let status = response.status();
     let body = response.text().await.map_err(|error| {
@@ -627,6 +643,8 @@ async fn verify_fonepay_web_payment(
             "Failed to read Fonepay verification response: {error}"
         ))
     })?;
+
+    eprintln!("[Fonepay] report API response: HTTP {status} body={}", &body[..body.len().min(500)]);
 
     if !status.is_success() {
         return Err(ApiError::from(format!("Fonepay returned {status}: {body}")));
@@ -700,7 +718,12 @@ async fn verify_fonepay_third_party_qr(
     let prn = request.prn.trim();
     let data_to_hash = format!("{},{}", prn, merchant_code);
     let data_validation = hmac_sha512_hex(merchant_secret.as_bytes(), data_to_hash.as_bytes());
-    let endpoint = fonepay_third_party_endpoint(&dynamic_qr_url, "thirdPartyDynamicQrGetStatus");
+    let report_url_override = settings
+        .as_ref()
+        .map(|s| s.report_url.trim().to_string())
+        .filter(|url| !url.is_empty());
+    let endpoint = report_url_override
+        .unwrap_or_else(|| fonepay_third_party_endpoint(&dynamic_qr_url, "thirdPartyDynamicQrGetStatus"));
 
     let payload = serde_json::json!({
         "prn": prn,
@@ -710,18 +733,25 @@ async fn verify_fonepay_third_party_qr(
         "password": password,
     });
 
+    eprintln!("[Fonepay] report API hit: endpoint={endpoint} prn={prn} merchantCode={merchant_code}");
+
     let response = reqwest::Client::new()
-        .post(endpoint)
+        .post(&endpoint)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .json(&payload)
         .send()
         .await
-        .map_err(|error| ApiError::from(format!("Failed to verify Fonepay QR: {error}")))?;
+        .map_err(|error| {
+            eprintln!("[Fonepay] report API request failed: {error}");
+            ApiError::from(format!("Failed to verify Fonepay QR: {error}"))
+        })?;
 
     let status = response.status();
     let body = response.text().await.map_err(|error| {
         ApiError::from(format!("Failed to read Fonepay status response: {error}"))
     })?;
+
+    eprintln!("[Fonepay] report API response: HTTP {status} body={}", &body[..body.len().min(500)]);
 
     if !status.is_success() {
         return Err(ApiError::from(format!("Fonepay returned {status}: {body}")));
@@ -904,6 +934,93 @@ pub async fn generate_nepalpay_dynamic_qr(
     Ok(NepalPayQrResponse {
         qr_string,
         validation_trace_id,
+        raw,
+    })
+}
+
+#[tauri::command]
+pub async fn check_nepalpay_payment_status(
+    request: NepalPayStatusRequest,
+) -> Result<NepalPayStatusResponse, ApiError> {
+    load_app_dotenv();
+
+    if request.validation_trace_id.trim().is_empty() {
+        return Err(ApiError::from("Validation trace ID is required"));
+    }
+
+    let settings = crate::db::read_nepalpay_settings().map_err(ApiError::from)?;
+
+    if settings.report_url.trim().is_empty() {
+        return Err(ApiError::from("Nepal Pay Report URL is not configured"));
+    }
+    if settings.merchant_id.trim().is_empty() {
+        return Err(ApiError::from("Nepal Pay merchant ID is not configured"));
+    }
+    if settings.acquirer_id.trim().is_empty() {
+        return Err(ApiError::from("Nepal Pay acquirer ID is not configured"));
+    }
+
+    let payload = serde_json::json!({
+        "validationTraceId": request.validation_trace_id.trim(),
+        "merchantId": settings.merchant_id.trim(),
+        "acquirerId": settings.acquirer_id.trim(),
+    });
+
+    eprintln!("[NepalPay] status request payload: {}", serde_json::to_string_pretty(&payload).unwrap_or_default());
+
+    let basic_auth = base64_encode(
+        format!("{}:{}", settings.api_username.trim(), settings.api_password.trim()).as_bytes()
+    );
+
+    let response = reqwest::Client::new()
+        .post(settings.report_url.trim())
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header(reqwest::header::ACCEPT, "application/json")
+        .header(reqwest::header::AUTHORIZATION, format!("Basic {basic_auth}"))
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|error| {
+            eprintln!("[NepalPay] status request failed: {error}");
+            ApiError::from(format!("Failed to call Nepal Pay report API: {error}"))
+        })?;
+
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| ApiError::from(format!("Failed to read Nepal Pay status response: {error}")))?;
+
+    eprintln!("[NepalPay] status response: HTTP {status} body={}", &body[..body.len().min(500)]);
+
+    if !status.is_success() {
+        return Err(ApiError::from(format!("Nepal Pay report API returned {status}: {body}")));
+    }
+
+    let raw = serde_json::from_str::<serde_json::Value>(&body)
+        .unwrap_or_else(|_| serde_json::json!({ "response": body }));
+
+    let response_code = raw.get("responseCode").and_then(|v| v.as_str()).map(str::to_string);
+    let response_status = raw.get("responseStatus").and_then(|v| v.as_str()).map(str::to_string);
+    // Some non-transaction responses (e.g. E012 "not initiated yet") put their
+    // text in responseDescription instead of responseMessage — fall back to it
+    // so the UI always has something to show instead of silently displaying nothing.
+    let response_message = raw
+        .get("responseMessage")
+        .and_then(|v| v.as_str())
+        .or_else(|| raw.get("responseDescription").and_then(|v| v.as_str()))
+        .map(str::to_string);
+    let transaction = raw
+        .get("responseBody")
+        .and_then(|body| body.as_array())
+        .and_then(|items| items.first())
+        .cloned();
+
+    Ok(NepalPayStatusResponse {
+        response_code,
+        response_status,
+        response_message,
+        transaction,
         raw,
     })
 }

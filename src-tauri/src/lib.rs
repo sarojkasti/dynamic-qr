@@ -166,6 +166,7 @@ pub fn run() {
             commands::save_nepalpay_settings,
             commands::delete_nepalpay_settings,
             commands::generate_nepalpay_dynamic_qr,
+            commands::check_nepalpay_payment_status,
             commands::get_busy_connection_summary,
             commands::get_busy_settings,
             commands::save_busy_settings,

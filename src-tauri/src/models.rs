@@ -12,6 +12,15 @@ pub struct Invoice {
     pub net_amount: Option<String>,
     pub amount_source: Option<String>,
     pub payment_status: Option<String>,
+    /// Payment provider used to pay this invoice ("nepalpay" | "fonepay" | "manual"),
+    /// decoded from the "NP:"/"FP:"/"MANUAL" prefix stored in the transaction-id
+    /// column. None for legacy plain transaction IDs saved before this existed.
+    #[serde(default)]
+    pub payment_provider: Option<String>,
+    /// The raw transaction/reference ID, with the provider prefix stripped — or
+    /// the plain string itself, for legacy rows saved before prefixing was added.
+    #[serde(default)]
+    pub payment_txn_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,6 +102,10 @@ pub struct FonepaySettings {
     pub integration_mode: String,
     #[serde(default)]
     pub pos_credit_column: String,
+    /// Overrides the auto-derived status-check URL (thirdPartyDynamicQrGetStatus
+    /// for Dynamic API mode, txnVerification for POS API mode) when set.
+    #[serde(default)]
+    pub report_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,6 +190,9 @@ pub struct NepalPaySettings {
     pub ws_username: String,
     /// Plain api_token — stored encrypted, decrypted before use
     pub ws_api_token: String,
+    /// URL for the transaction-status report API (validationTraceId lookup)
+    #[serde(default)]
+    pub report_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,5 +207,21 @@ pub struct NepalPayQrRequest {
 pub struct NepalPayQrResponse {
     pub qr_string: Option<String>,
     pub validation_trace_id: Option<String>,
+    pub raw: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NepalPayStatusRequest {
+    pub validation_trace_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NepalPayStatusResponse {
+    pub response_code: Option<String>,
+    pub response_status: Option<String>,
+    pub response_message: Option<String>,
+    pub transaction: Option<serde_json::Value>,
     pub raw: serde_json::Value,
 }

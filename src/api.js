@@ -108,6 +108,7 @@ async function openProviderPopup(invoice, provider, label, offsetX) {
 
   const existing = await WebviewWindow.getByLabel(labelId);
   if (existing) {
+    await existing.setAlwaysOnTop(true);
     await existing.setFocus();
     await existing.emit("invoice-popup-update", {
       invoiceNo: invoice.invoiceNo,
@@ -127,11 +128,12 @@ async function openProviderPopup(invoice, provider, label, offsetX) {
     maximizable: false,
     decorations: true,
     x: offsetX,
-    focus: provider === "fonepay",
+    focus: true,
+    alwaysOnTop: true,
   });
 
   popup.once("tauri://created", async () => {
-    if (provider === "fonepay") await popup.setFocus();
+    await popup.setFocus();
   });
 }
 
@@ -142,7 +144,7 @@ export async function openInvoicePopup(invoice, providers = ["fonepay", "nepalpa
     providers.map((provider) =>
       provider === "fonepay"
         ? openProviderPopup(invoice, "fonepay", "Fonepay", 100)
-        : openProviderPopup(invoice, "nepalpay", "Nepal Pay", 500)
+        : openProviderPopup(invoice, "nepalpay", "NEPALPAY", 500)
     )
   );
 }
@@ -186,14 +188,14 @@ export async function getInvoiceByVchCode(vchCode, posCreditColumn = null) {
   return invoke("get_invoice_by_vch_code", { vchCode: Number(vchCode), posCreditColumn: posCreditColumn || null });
 }
 
-export async function markInvoicePaid(invoiceNo, transactionId = "") {
+export async function markInvoicePaid(invoiceNo, transactionId = "", provider = "") {
   if (!canUseTauri()) {
     const invoice = fallbackInvoices.find((item) => item.invoiceNo === invoiceNo);
     if (invoice) invoice.paymentStatus = "Paid";
     return invoice ?? null;
   }
 
-  return invoke("mark_invoice_paid", { invoiceNo, transactionId });
+  return invoke("mark_invoice_paid", { invoiceNo, transactionId, provider });
 }
 
 export async function logPaymentStatus(message) {
@@ -219,7 +221,8 @@ export async function getFonepaySettings() {
     merchantSecret: "",
     username: "",
     password: "",
-    integrationMode: ""
+    integrationMode: "",
+    reportUrl: ""
   };
   return invoke("get_fonepay_settings");
 }
@@ -257,7 +260,8 @@ export async function getNepalPaySettings() {
     userId: "",
     wsUrl: "",
     wsUsername: "",
-    wsApiToken: ""
+    wsApiToken: "",
+    reportUrl: ""
   };
   return invoke("get_nepalpay_settings");
 }
@@ -276,6 +280,13 @@ export async function generateNepalPayDynamicQr(request) {
     };
   }
   return invoke("generate_nepalpay_dynamic_qr", { request });
+}
+
+export async function checkNepalPayPaymentStatus(validationTraceId) {
+  if (!canUseTauri()) {
+    return { responseCode: "200", responseStatus: "SUCCESS", responseMessage: null, transaction: { preview: true }, raw: {} };
+  }
+  return invoke("check_nepalpay_payment_status", { request: { validationTraceId } });
 }
 
 export async function startBusyInvoiceWatcher() {
