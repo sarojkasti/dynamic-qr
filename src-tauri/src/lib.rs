@@ -64,7 +64,11 @@ fn is_leap_year(year: u64) -> bool {
 }
 
 fn days_in_year(year: u64) -> u64 {
-    if is_leap_year(year) { 366 } else { 365 }
+    if is_leap_year(year) {
+        366
+    } else {
+        365
+    }
 }
 
 fn days_in_month(year: u64, month: u64) -> u64 {
@@ -78,9 +82,11 @@ fn days_in_month(year: u64, month: u64) -> u64 {
 }
 
 fn validate_license_file() -> Result<(), String> {
-    let path = resolve_license_file_path()
-        .ok_or_else(|| "License file not found in the app folder or current working directory".to_string())?;
-    let content = fs::read_to_string(&path).map_err(|_| format!("License file not found: {}", path.display()))?;
+    let path = resolve_license_file_path().ok_or_else(|| {
+        "License file not found in the app folder or current working directory".to_string()
+    })?;
+    let content = fs::read_to_string(&path)
+        .map_err(|_| format!("License file not found: {}", path.display()))?;
     let license = content.trim();
     if license.is_empty() {
         return Err("License file is empty".to_string());
@@ -118,7 +124,13 @@ mod tests {
 
     #[test]
     fn finds_license_in_current_working_directory() {
-        let unique_name = format!("busypay_qr_license_test_{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos());
+        let unique_name = format!(
+            "busypay_qr_license_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
         let temp_dir = std::env::temp_dir().join(unique_name);
         fs::create_dir_all(&temp_dir).unwrap();
 
@@ -157,6 +169,8 @@ pub fn run() {
             commands::mark_invoice_paid,
             commands::log_payment_status,
             commands::save_bank_merchant,
+            commands::get_settings_scope,
+            commands::save_settings_scope,
             commands::get_fonepay_settings,
             commands::save_fonepay_settings,
             commands::delete_fonepay_settings,
@@ -167,6 +181,8 @@ pub fn run() {
             commands::delete_nepalpay_settings,
             commands::generate_nepalpay_dynamic_qr,
             commands::check_nepalpay_payment_status,
+            commands::record_nepalpay_session_number,
+            commands::nepalpay_encrypt_ws_token,
             commands::get_busy_connection_summary,
             commands::get_busy_settings,
             commands::save_busy_settings,

@@ -46,7 +46,6 @@ impl DbDialect {
         }
     }
 
-
     // Equivalent of COALESCE(NULLIF(a,''), NULLIF(b,''), fallback)
     fn coalesce_nonempty(&self, exprs: &[&str], fallback: &str) -> String {
         match self {
@@ -73,7 +72,14 @@ impl DbDialect {
     }
 
     // Access requires parens around multiple JOINs; SQL Server does not
-    fn two_left_joins(&self, table: &str, j1_table: &str, j1_on: &str, j2_table: &str, j2_on: &str) -> String {
+    fn two_left_joins(
+        &self,
+        table: &str,
+        j1_table: &str,
+        j1_on: &str,
+        j2_table: &str,
+        j2_on: &str,
+    ) -> String {
         match self {
             DbDialect::SqlServer => format!(
                 "{table} \
@@ -138,7 +144,16 @@ impl BusyDb {
         })
     }
 
-    pub fn save_settings(&self, mut settings: BusySettings) -> Result<BusySettingsState, String> {
+    pub fn save_settings(&self, settings: BusySettings) -> Result<BusySettingsState, String> {
+        let scope = read_settings_scope();
+        self.save_settings_scoped(settings, &scope.busy)
+    }
+
+    pub fn save_settings_scoped(
+        &self,
+        mut settings: BusySettings,
+        scope: &crate::models::SettingsScopeKind,
+    ) -> Result<BusySettingsState, String> {
         // show_setting is a hidden, hand-edited flag not exposed in the
         // settings form — preserve whatever is already on disk instead of
         // letting a form save (which never sends this field) wipe it out.
@@ -146,7 +161,7 @@ impl BusyDb {
             settings.show_setting = current.show_setting;
         }
         validate_settings(&settings)?;
-        let path = settings_file_path()?;
+        let path = resolve_scoped_write_path("busy-settings.json", scope)?;
         write_settings_file(&settings, &path)?;
         self.apply_settings(settings.clone())?;
 
@@ -225,7 +240,11 @@ fn load_initial_settings() -> BusySettings {
 }
 
 impl BusyDb {
-    pub fn get_invoice_by_id(&self, invoice_no: String, pos_credit_column: Option<&str>) -> Result<Option<Invoice>, String> {
+    pub fn get_invoice_by_id(
+        &self,
+        invoice_no: String,
+        pos_credit_column: Option<&str>,
+    ) -> Result<Option<Invoice>, String> {
         let settings = self.settings()?;
         let table = checked_identifier(&settings.invoice_table)?;
         let status_table = checked_identifier(&settings.payment_status_table)?;
@@ -249,8 +268,10 @@ impl BusyDb {
         let trim_param = dialect.trim("?");
         let from_clause = dialect.two_left_joins(
             &format!("{table} t"),
-            "Master1 m", "m.Code = t.MasterCode1",
-            &format!("{status_table} oi"), "oi.VchCode = t.VchCode",
+            "Master1 m",
+            "m.Code = t.MasterCode1",
+            &format!("{status_table} oi"),
+            "oi.VchCode = t.VchCode",
         );
         let sql = format!(
             "SELECT TOP 1 t.VchCode, \
@@ -286,7 +307,11 @@ impl BusyDb {
         }
     }
 
-    pub fn get_invoice_by_vch_code(&self, vch_code: i32, pos_credit_column: Option<&str>) -> Result<Option<Invoice>, String> {
+    pub fn get_invoice_by_vch_code(
+        &self,
+        vch_code: i32,
+        pos_credit_column: Option<&str>,
+    ) -> Result<Option<Invoice>, String> {
         let settings = self.settings()?;
         let table = checked_identifier(&settings.invoice_table)?;
         let status_table = checked_identifier(&settings.payment_status_table)?;
@@ -294,7 +319,10 @@ impl BusyDb {
         let txn_id_column = checked_column_identifier(&settings.payment_transaction_id_column)?;
         let dialect = DbDialect::from_settings(&settings);
         let effective_col = pos_credit_column.or(settings.pos_credit_column.as_deref());
-        eprintln!("[DB] get_invoice_by_vch_code: vch_code={} effective_col={:?}", vch_code, effective_col);
+        eprintln!(
+            "[DB] get_invoice_by_vch_code: vch_code={} effective_col={:?}",
+            vch_code, effective_col
+        );
         let amount = invoice_amount_sql(effective_col, &dialect);
         let amount_value = amount.value_expression;
         let amount_source = amount.source_expression;
@@ -308,8 +336,10 @@ impl BusyDb {
         let txn_expr = format!("oi.[{txn_id_column}]");
         let from_clause = dialect.two_left_joins(
             &format!("{table} t"),
-            "Master1 m", "m.Code = t.MasterCode1",
-            &format!("{status_table} oi"), "oi.VchCode = t.VchCode",
+            "Master1 m",
+            "m.Code = t.MasterCode1",
+            &format!("{status_table} oi"),
+            "oi.VchCode = t.VchCode",
         );
         let sql = format!(
             "SELECT TOP 1 t.VchCode, \
@@ -344,7 +374,11 @@ impl BusyDb {
         }
     }
 
-    pub fn get_latest_invoices(&self, limit: i32, pos_credit_column: Option<&str>) -> Result<Vec<Invoice>, String> {
+    pub fn get_latest_invoices(
+        &self,
+        limit: i32,
+        pos_credit_column: Option<&str>,
+    ) -> Result<Vec<Invoice>, String> {
         let settings = self.settings()?;
         let table = checked_identifier(&settings.invoice_table)?;
         let status_table = checked_identifier(&settings.payment_status_table)?;
@@ -367,8 +401,10 @@ impl BusyDb {
         let vchno_nonempty = dialect.nonempty_condition("t.VchNo");
         let from_clause = dialect.two_left_joins(
             &format!("{table} t"),
-            "Master1 m", "m.Code = t.MasterCode1",
-            &format!("{status_table} oi"), "oi.VchCode = t.VchCode",
+            "Master1 m",
+            "m.Code = t.MasterCode1",
+            &format!("{status_table} oi"),
+            "oi.VchCode = t.VchCode",
         );
         let limit = limit.clamp(1, 200);
         let sql = format!(
@@ -460,8 +496,12 @@ impl BusyDb {
                     let paid_param = "Paid".into_parameter();
                     let txn_param = transaction_id.as_str().into_parameter();
                     let vch_param = vch_code.into_parameter();
-                    conn.execute(&sql, (&paid_param, &txn_param, &vch_param), dialect.query_timeout())
-                        .map_err(|e| e.to_string())?;
+                    conn.execute(
+                        &sql,
+                        (&paid_param, &txn_param, &vch_param),
+                        dialect.query_timeout(),
+                    )
+                    .map_err(|e| e.to_string())?;
                 } else {
                     let sql = format!(
                         "INSERT INTO {status_table} (VchCode, [{status_column}], [{txn_id_column}]) VALUES (?, ?, ?)"
@@ -469,13 +509,16 @@ impl BusyDb {
                     let vch_param = vch_code.into_parameter();
                     let paid_param = "Paid".into_parameter();
                     let txn_param = transaction_id.as_str().into_parameter();
-                    conn.execute(&sql, (&vch_param, &paid_param, &txn_param), dialect.query_timeout())
-                        .map_err(|e| e.to_string())?;
+                    conn.execute(
+                        &sql,
+                        (&vch_param, &paid_param, &txn_param),
+                        dialect.query_timeout(),
+                    )
+                    .map_err(|e| e.to_string())?;
                 }
             } else if exists {
-                let sql = format!(
-                    "UPDATE {status_table} SET [{status_column}] = ? WHERE VchCode = ?"
-                );
+                let sql =
+                    format!("UPDATE {status_table} SET [{status_column}] = ? WHERE VchCode = ?");
                 let paid_param = "Paid".into_parameter();
                 let vch_param = vch_code.into_parameter();
                 conn.execute(&sql, (&paid_param, &vch_param), dialect.query_timeout())
@@ -548,7 +591,52 @@ impl BusyDb {
         self.get_invoice_by_id(invoice_no, None)
     }
 
-    pub fn search_invoice(&self, query: String, pos_credit_column: Option<&str>) -> Result<Vec<Invoice>, String> {
+    pub fn save_invoice_session_number(
+        &self,
+        invoice_no: &str,
+        session_number: &str,
+        session_column: &str,
+    ) -> Result<(), String> {
+        let settings = self.settings()?;
+        let table = checked_identifier(&settings.invoice_table)?;
+        let status_table = checked_identifier(&settings.payment_status_table)?;
+        let status_column = checked_column_identifier(&settings.payment_status_column)?;
+        let txn_id_column = checked_column_identifier(&settings.payment_transaction_id_column)?;
+        let session_column = checked_column_identifier(session_column)?;
+
+        if session_column.eq_ignore_ascii_case(&status_column)
+            || session_column.eq_ignore_ascii_case(&txn_id_column)
+        {
+            return Err(
+                "Session number column must be different from the payment status and transaction ID columns."
+                    .to_string(),
+            );
+        }
+
+        let session_number = session_number.trim();
+        if session_number.is_empty() {
+            return Err("NepalPay session number is empty.".to_string());
+        }
+
+        self.ensure_text_status_column(&status_table, &session_column)?;
+        let vch_code = self
+            .find_sales_voucher_code(&table, invoice_no)?
+            .ok_or_else(|| "Sales voucher was not found for this invoice number.".to_string())?;
+        let dialect = DbDialect::from_settings(&settings);
+        let conn = self.connect()?;
+        let sql = format!("UPDATE {status_table} SET [{session_column}] = ? WHERE VchCode = ?");
+        let session_param = session_number.into_parameter();
+        let vch_param = vch_code.into_parameter();
+        conn.execute(&sql, (&session_param, &vch_param), dialect.query_timeout())
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    pub fn search_invoice(
+        &self,
+        query: String,
+        pos_credit_column: Option<&str>,
+    ) -> Result<Vec<Invoice>, String> {
         let settings = self.settings()?;
         let table = checked_identifier(&settings.invoice_table)?;
         let status_table = checked_identifier(&settings.payment_status_table)?;
@@ -571,8 +659,10 @@ impl BusyDb {
         let trim_vchno = dialect.trim("t.VchNo");
         let from_clause = dialect.two_left_joins(
             &format!("{table} t"),
-            "Master1 m", "m.Code = t.MasterCode1",
-            &format!("{status_table} oi"), "oi.VchCode = t.VchCode",
+            "Master1 m",
+            "m.Code = t.MasterCode1",
+            &format!("{status_table} oi"),
+            "oi.VchCode = t.VchCode",
         );
         let sql = format!(
             "SELECT TOP 50 t.VchCode, \
@@ -725,7 +815,12 @@ impl BusyDb {
         .map_err(|error| error.to_string())
     }
 
-    fn fetch_invoices<P>(&self, sql: &str, params: P, timeout: Option<usize>) -> Result<Vec<Invoice>, String>
+    fn fetch_invoices<P>(
+        &self,
+        sql: &str,
+        params: P,
+        timeout: Option<usize>,
+    ) -> Result<Vec<Invoice>, String>
     where
         P: odbc_api::ParameterCollectionRef,
     {
@@ -896,10 +991,16 @@ fn parse_payment_meta(raw: Option<String>) -> (Option<String>, Option<String>) {
         return (Some("manual".to_string()), None);
     }
     if let Some(txn_id) = raw.strip_prefix("NP:") {
-        return (Some("nepalpay".to_string()), Some(txn_id.to_string()).filter(|v| !v.is_empty()));
+        return (
+            Some("nepalpay".to_string()),
+            Some(txn_id.to_string()).filter(|v| !v.is_empty()),
+        );
     }
     if let Some(txn_id) = raw.strip_prefix("FP:") {
-        return (Some("fonepay".to_string()), Some(txn_id.to_string()).filter(|v| !v.is_empty()));
+        return (
+            Some("fonepay".to_string()),
+            Some(txn_id.to_string()).filter(|v| !v.is_empty()),
+        );
     }
 
     (None, Some(raw))
@@ -983,9 +1084,7 @@ fn invoice_amount_sql(pos_credit_column: Option<&str>, dialect: &DbDialect) -> I
                  WHERE pd.VchCode = t.VchCode AND pd.[{col}] IS NOT NULL"
             );
             InvoiceAmountSql {
-                value_expression: format!(
-                    "IIf(Not IsNull(({sub})), ({sub}), {fallback_amount})"
-                ),
+                value_expression: format!("IIf(Not IsNull(({sub})), ({sub}), {fallback_amount})"),
                 source_expression: format!(
                     "IIf(Not IsNull(({sub})), 'POSDet {col}', 'Invoice net amount')"
                 ),
@@ -1003,8 +1102,13 @@ fn validate_settings(settings: &BusySettings) -> Result<(), String> {
     checked_identifier(&settings.payment_status_table)?;
     checked_column_identifier(&settings.payment_status_column)?;
     checked_column_identifier(&settings.payment_transaction_id_column)?;
-    if settings.payment_status_column.eq_ignore_ascii_case(&settings.payment_transaction_id_column) {
-        return Err("Payment status column and transaction ID column must be different.".to_string());
+    if settings
+        .payment_status_column
+        .eq_ignore_ascii_case(&settings.payment_transaction_id_column)
+    {
+        return Err(
+            "Payment status column and transaction ID column must be different.".to_string(),
+        );
     }
     invoice_amount_sql(
         settings.pos_credit_column.as_deref(),
@@ -1057,56 +1161,86 @@ fn write_settings_file(settings: &BusySettings, path: &PathBuf) -> Result<(), St
     })
 }
 
-fn candidate_config_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-
-    // Same search order as the license file lookup, so settings JSON files
-    // can live alongside license.txt.
-    if let Ok(current_dir) = env::current_dir() {
-        dirs.push(current_dir);
-    }
-
-    if let Ok(exe_path) = env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            dirs.push(exe_dir.to_path_buf());
-            if let Some(parent_dir) = exe_dir.parent() {
-                dirs.push(parent_dir.to_path_buf());
-            }
-        }
-    }
-
-    if let Ok(appdata) = env::var("APPDATA") {
-        dirs.push(PathBuf::from(appdata).join("BusyPay QR"));
-    }
-
-    let mut deduped = Vec::new();
-    for dir in dirs {
-        if !deduped.iter().any(|existing| existing == &dir) {
-            deduped.push(dir);
-        }
-    }
-
-    deduped
+/// Returns the shared app-data folder: %APPDATA%\BusyPay QR
+fn shared_appdata_dir() -> Option<PathBuf> {
+    env::var("APPDATA")
+        .ok()
+        .map(|appdata| PathBuf::from(appdata).join("BusyPay QR"))
 }
 
-fn resolve_config_path(file_name: &str) -> Result<PathBuf, String> {
-    let dirs = candidate_config_dirs();
-    for dir in &dirs {
-        let candidate = dir.join(file_name);
-        if candidate.exists() {
-            return Ok(candidate);
-        }
-    }
+/// Returns the per-user app-data folder: %APPDATA%\BusyPay QR\<username>
+fn user_appdata_dir() -> Option<PathBuf> {
+    let base = shared_appdata_dir()?;
+    let username = env::var("USERNAME").ok().filter(|u| !u.trim().is_empty())?;
+    Some(base.join(username.trim()))
+}
 
-    let fallback_dir = dirs
-        .first()
-        .cloned()
-        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    Ok(fallback_dir.join(file_name))
+/// Resolves path for a given scope — ignores exe/cwd candidates and goes
+/// directly to the user or shared app-data folder.
+fn resolve_scoped_write_path(
+    file_name: &str,
+    scope: &crate::models::SettingsScopeKind,
+) -> Result<PathBuf, String> {
+    let dir = match scope {
+        crate::models::SettingsScopeKind::User => user_appdata_dir()
+            .ok_or_else(|| "Could not determine user app-data directory".to_string())?,
+        crate::models::SettingsScopeKind::Shared => shared_appdata_dir().ok_or_else(|| {
+            "Could not determine shared app-data directory (%APPDATA%)".to_string()
+        })?,
+    };
+    Ok(dir.join(file_name))
+}
+
+/// Resolve the active settings file from the scope selected by the current
+/// Windows user.  Reads must use the same path as writes; otherwise a legacy
+/// file beside the executable can silently override per-user settings.
+fn resolve_scoped_read_path(
+    file_name: &str,
+    scope: &crate::models::SettingsScopeKind,
+) -> Result<PathBuf, String> {
+    resolve_scoped_write_path(file_name, scope)
+}
+
+// ---------------------------------------------------------------------------
+// Settings scope persistence
+// ---------------------------------------------------------------------------
+
+const SETTINGS_SCOPE_FILE: &str = "settings-scope.json";
+
+pub fn read_settings_scope() -> crate::models::SettingsScope {
+    // Scope is always stored per-user
+    let path = match user_appdata_dir() {
+        Some(dir) => dir.join(SETTINGS_SCOPE_FILE),
+        None => return crate::models::SettingsScope::default(),
+    };
+    if !path.exists() {
+        return crate::models::SettingsScope::default();
+    }
+    fs::read_to_string(&path)
+        .ok()
+        .and_then(|content| serde_json::from_str(&content).ok())
+        .unwrap_or_default()
+}
+
+pub fn write_settings_scope(scope: &crate::models::SettingsScope) -> Result<(), String> {
+    let dir = user_appdata_dir()
+        .ok_or_else(|| "Could not determine user app-data directory".to_string())?;
+    fs::create_dir_all(&dir).map_err(|e| {
+        format!(
+            "Could not create user settings directory {}: {e}",
+            dir.display()
+        )
+    })?;
+    let path = dir.join(SETTINGS_SCOPE_FILE);
+    let content = serde_json::to_string_pretty(scope)
+        .map_err(|e| format!("Could not serialize settings scope: {e}"))?;
+    fs::write(&path, content)
+        .map_err(|e| format!("Could not save settings scope to {}: {e}", path.display()))
 }
 
 fn settings_file_path() -> Result<PathBuf, String> {
-    resolve_config_path("busy-settings.json")
+    let scope = read_settings_scope();
+    resolve_scoped_read_path("busy-settings.json", &scope.busy)
 }
 
 fn mask_connection_string(value: &str) -> String {
@@ -1165,7 +1299,15 @@ pub fn read_fonepay_settings() -> Result<crate::models::FonepaySettings, String>
 pub fn write_fonepay_settings(
     settings: &crate::models::FonepaySettings,
 ) -> Result<crate::models::FonepaySettings, String> {
-    let path = fonepay_settings_file_path()?;
+    let scope = read_settings_scope();
+    write_fonepay_settings_scoped(settings, &scope.fonepay)
+}
+
+pub fn write_fonepay_settings_scoped(
+    settings: &crate::models::FonepaySettings,
+    scope: &crate::models::SettingsScopeKind,
+) -> Result<crate::models::FonepaySettings, String> {
+    let path = resolve_scoped_write_path("fonepay-settings.json", scope)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -1213,7 +1355,10 @@ pub fn read_nepalpay_settings() -> Result<crate::models::NepalPaySettings, Strin
             ws_url: String::new(),
             ws_username: String::new(),
             ws_api_token: String::new(),
+            ws_public_key_pem: String::new(),
             report_url: String::new(),
+            session_report_url: String::new(),
+            session_number_column: String::new(),
         });
     }
 
@@ -1235,10 +1380,19 @@ pub fn read_nepalpay_settings() -> Result<crate::models::NepalPaySettings, Strin
     Ok(settings)
 }
 
+#[allow(dead_code)]
 pub fn write_nepalpay_settings(
     settings: &crate::models::NepalPaySettings,
 ) -> Result<crate::models::NepalPaySettings, String> {
-    let path = nepalpay_settings_file_path()?;
+    let scope = read_settings_scope();
+    write_nepalpay_settings_scoped(settings, &scope.nepalpay)
+}
+
+pub fn write_nepalpay_settings_scoped(
+    settings: &crate::models::NepalPaySettings,
+    scope: &crate::models::SettingsScopeKind,
+) -> Result<crate::models::NepalPaySettings, String> {
+    let path = resolve_scoped_write_path("nepalpay-settings.json", scope)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -1283,7 +1437,8 @@ pub fn clear_nepalpay_settings() -> Result<(), String> {
 }
 
 fn nepalpay_settings_file_path() -> Result<PathBuf, String> {
-    resolve_config_path("nepalpay-settings.json")
+    let scope = read_settings_scope();
+    resolve_scoped_read_path("nepalpay-settings.json", &scope.nepalpay)
 }
 
 fn encrypt_nepalpay_settings(settings: &mut crate::models::NepalPaySettings) -> Result<(), String> {
@@ -1301,7 +1456,8 @@ fn decrypt_nepalpay_settings(settings: &mut crate::models::NepalPaySettings) -> 
 }
 
 fn fonepay_settings_file_path() -> Result<PathBuf, String> {
-    resolve_config_path("fonepay-settings.json")
+    let scope = read_settings_scope();
+    resolve_scoped_read_path("fonepay-settings.json", &scope.fonepay)
 }
 
 const PROTECTED_SECRET_PREFIX: &str = "dpapi:v1:";

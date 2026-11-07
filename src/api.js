@@ -56,9 +56,19 @@ export async function getBusySettings() {
   return invoke("get_busy_settings");
 }
 
-export async function saveBusySettings(settings) {
+export async function saveBusySettings(settings, scope) {
   if (!canUseTauri()) return settings;
-  return invoke("save_busy_settings", { settings });
+  return invoke("save_busy_settings", { settings, scope: scope ?? null });
+}
+
+export async function getSettingsScope() {
+  if (!canUseTauri()) return { fonepay: "user", nepalpay: "user", busy: "user" };
+  return invoke("get_settings_scope");
+}
+
+export async function saveSettingsScope(scope) {
+  if (!canUseTauri()) return;
+  return invoke("save_settings_scope", { scope });
 }
 
 export async function getLaunchInvoiceNo() {
@@ -227,9 +237,9 @@ export async function getFonepaySettings() {
   return invoke("get_fonepay_settings");
 }
 
-export async function saveFonepaySettings(settings) {
+export async function saveFonepaySettings(settings, scope) {
   if (!canUseTauri()) return settings;
-  return invoke("save_fonepay_settings", { settings });
+  return invoke("save_fonepay_settings", { settings, scope: scope ?? null });
 }
 
 export async function generateFonepayDynamicQr(request) {
@@ -261,14 +271,22 @@ export async function getNepalPaySettings() {
     wsUrl: "",
     wsUsername: "",
     wsApiToken: "",
-    reportUrl: ""
+    wsPublicKeyPem: "",
+    reportUrl: "",
+    sessionReportUrl: "",
+    sessionNumberColumn: ""
   };
   return invoke("get_nepalpay_settings");
 }
 
-export async function saveNepalPaySettings(settings) {
+export async function saveNepalPaySettings(settings, scope) {
   if (!canUseTauri()) return settings;
-  return invoke("save_nepalpay_settings", { settings });
+  return invoke("save_nepalpay_settings", { settings, scope: scope ?? null });
+}
+
+export async function encryptNepalPayWsToken(apiToken, publicKeyPem) {
+  if (!canUseTauri()) return apiToken;
+  return invoke("nepalpay_encrypt_ws_token", { apiToken, publicKeyPem });
 }
 
 export async function generateNepalPayDynamicQr(request) {
@@ -287,6 +305,13 @@ export async function checkNepalPayPaymentStatus(validationTraceId) {
     return { responseCode: "200", responseStatus: "SUCCESS", responseMessage: null, transaction: { preview: true }, raw: {} };
   }
   return invoke("check_nepalpay_payment_status", { request: { validationTraceId } });
+}
+
+export async function recordNepalPaySessionNumber(invoiceNo, transactionId, transactionDate) {
+  if (!canUseTauri()) return { sessionNumber: null };
+  return invoke("record_nepalpay_session_number", {
+    request: { invoiceNo, transactionId, transactionDate }
+  });
 }
 
 export async function startBusyInvoiceWatcher() {

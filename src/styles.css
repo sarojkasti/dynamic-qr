@@ -760,3 +760,48 @@ label {
     grid-template-columns: 1fr;
   }
 }
+
+/* Settings scope toggle */
+.scope-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.75rem;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+
+.scope-toggle-label {
+  font-weight: 600;
+  color: #475569;
+  margin-right: 0.25rem;
+}
+
+.scope-toggle-option {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 4px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  color: #64748b;
+}
+
+.scope-toggle-option.active {
+  background: #fff;
+  border-color: #cbd5e1;
+  color: #1e293b;
+  font-weight: 500;
+}
+
+.scope-toggle-hint {
+  width: 100%;
+  color: #64748b;
+  font-size: 0.78rem;
+  margin-top: 0.1rem;
+}

@@ -16,17 +16,18 @@ use crate::{
     models::{
         ApiError, BankMerchant, BusySettings, BusySettingsState, DynamicQrRequest,
         DynamicQrResponse, FonepaySettings, Invoice, NepalPayQrRequest, NepalPayQrResponse,
-        NepalPaySettings, NepalPayStatusRequest, NepalPayStatusResponse, PaymentQrStatusRequest,
-        PaymentQrStatusResponse,
+        NepalPaySessionRequest, NepalPaySessionResponse, NepalPaySettings, NepalPayStatusRequest,
+        NepalPayStatusResponse, PaymentQrStatusRequest, PaymentQrStatusResponse, SettingsScope,
+        SettingsScopeKind,
     },
 };
 
 use rsa::{
-    pkcs1v15::SigningKey,
-    pkcs1::DecodeRsaPrivateKey,
-    pkcs8::DecodePrivateKey,
-    signature::{Signer, SignatureEncoding},
-    RsaPrivateKey,
+    pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey},
+    pkcs1v15::{Pkcs1v15Encrypt, SigningKey},
+    pkcs8::{DecodePrivateKey, DecodePublicKey},
+    signature::{SignatureEncoding, Signer},
+    RsaPrivateKey, RsaPublicKey,
 };
 use sha2::{Digest, Sha256, Sha512};
 
@@ -36,8 +37,13 @@ pub struct WatcherState {
 }
 
 #[tauri::command]
-pub fn get_invoice(db: State<'_, BusyDb>, invoice_no: String, pos_credit_column: Option<String>) -> Result<Option<Invoice>, ApiError> {
-    db.get_invoice_by_id(invoice_no, pos_credit_column.as_deref()).map_err(ApiError::from)
+pub fn get_invoice(
+    db: State<'_, BusyDb>,
+    invoice_no: String,
+    pos_credit_column: Option<String>,
+) -> Result<Option<Invoice>, ApiError> {
+    db.get_invoice_by_id(invoice_no, pos_credit_column.as_deref())
+        .map_err(ApiError::from)
 }
 
 #[tauri::command]
@@ -46,17 +52,28 @@ pub fn get_invoice_by_vch_code(
     vch_code: i32,
     pos_credit_column: Option<String>,
 ) -> Result<Option<Invoice>, ApiError> {
-    db.get_invoice_by_vch_code(vch_code, pos_credit_column.as_deref()).map_err(ApiError::from)
+    db.get_invoice_by_vch_code(vch_code, pos_credit_column.as_deref())
+        .map_err(ApiError::from)
 }
 
 #[tauri::command]
-pub fn get_latest_invoices(db: State<'_, BusyDb>, limit: i32, pos_credit_column: Option<String>) -> Result<Vec<Invoice>, ApiError> {
-    db.get_latest_invoices(limit, pos_credit_column.as_deref()).map_err(ApiError::from)
+pub fn get_latest_invoices(
+    db: State<'_, BusyDb>,
+    limit: i32,
+    pos_credit_column: Option<String>,
+) -> Result<Vec<Invoice>, ApiError> {
+    db.get_latest_invoices(limit, pos_credit_column.as_deref())
+        .map_err(ApiError::from)
 }
 
 #[tauri::command]
-pub fn search_invoice(db: State<'_, BusyDb>, query: String, pos_credit_column: Option<String>) -> Result<Vec<Invoice>, ApiError> {
-    db.search_invoice(query, pos_credit_column.as_deref()).map_err(ApiError::from)
+pub fn search_invoice(
+    db: State<'_, BusyDb>,
+    query: String,
+    pos_credit_column: Option<String>,
+) -> Result<Vec<Invoice>, ApiError> {
+    db.search_invoice(query, pos_credit_column.as_deref())
+        .map_err(ApiError::from)
 }
 
 #[tauri::command]
@@ -122,14 +139,32 @@ pub fn save_bank_merchant(
 }
 
 #[tauri::command]
+pub fn get_settings_scope() -> SettingsScope {
+    crate::db::read_settings_scope()
+}
+
+#[tauri::command]
+pub fn save_settings_scope(scope: SettingsScope) -> Result<(), ApiError> {
+    crate::db::write_settings_scope(&scope).map_err(ApiError::from)
+}
+
+#[tauri::command]
 pub fn get_fonepay_settings() -> Result<FonepaySettings, ApiError> {
     crate::db::read_fonepay_settings().map_err(ApiError::from)
 }
 
 #[tauri::command]
-pub fn save_fonepay_settings(db: tauri::State<'_, crate::db::BusyDb>, settings: FonepaySettings) -> Result<FonepaySettings, ApiError> {
-    crate::db::write_fonepay_settings(&settings).map_err(ApiError::from)?;
-    eprintln!("[Fonepay] save_settings: pos_credit_column={:?}", settings.pos_credit_column);
+pub fn save_fonepay_settings(
+    db: tauri::State<'_, crate::db::BusyDb>,
+    settings: FonepaySettings,
+    scope: Option<String>,
+) -> Result<FonepaySettings, ApiError> {
+    let scope_kind = parse_scope(scope.as_deref());
+    crate::db::write_fonepay_settings_scoped(&settings, &scope_kind).map_err(ApiError::from)?;
+    eprintln!(
+        "[Fonepay] save_settings: pos_credit_column={:?} scope={:?}",
+        settings.pos_credit_column, scope_kind
+    );
     if !settings.pos_credit_column.trim().is_empty() {
         db.set_pos_credit_column(settings.pos_credit_column.trim());
     }
@@ -143,7 +178,10 @@ pub async fn generate_fonepay_dynamic_qr(
     load_app_dotenv();
 
     let mode = fonepay_mode();
-    eprintln!("[Fonepay] generate_dynamic_qr: mode={mode} txn={} amount={}", request.transaction_id, request.amount);
+    eprintln!(
+        "[Fonepay] generate_dynamic_qr: mode={mode} txn={} amount={}",
+        request.transaction_id, request.amount
+    );
 
     if mode == "dynamic_api" {
         return generate_fonepay_third_party_dynamic_qr(request).await;
@@ -644,7 +682,10 @@ async fn verify_fonepay_web_payment(
         ))
     })?;
 
-    eprintln!("[Fonepay] report API response: HTTP {status} body={}", &body[..body.len().min(500)]);
+    eprintln!(
+        "[Fonepay] report API response: HTTP {status} body={}",
+        &body[..body.len().min(500)]
+    );
 
     if !status.is_success() {
         return Err(ApiError::from(format!("Fonepay returned {status}: {body}")));
@@ -722,8 +763,9 @@ async fn verify_fonepay_third_party_qr(
         .as_ref()
         .map(|s| s.report_url.trim().to_string())
         .filter(|url| !url.is_empty());
-    let endpoint = report_url_override
-        .unwrap_or_else(|| fonepay_third_party_endpoint(&dynamic_qr_url, "thirdPartyDynamicQrGetStatus"));
+    let endpoint = report_url_override.unwrap_or_else(|| {
+        fonepay_third_party_endpoint(&dynamic_qr_url, "thirdPartyDynamicQrGetStatus")
+    });
 
     let payload = serde_json::json!({
         "prn": prn,
@@ -733,7 +775,9 @@ async fn verify_fonepay_third_party_qr(
         "password": password,
     });
 
-    eprintln!("[Fonepay] report API hit: endpoint={endpoint} prn={prn} merchantCode={merchant_code}");
+    eprintln!(
+        "[Fonepay] report API hit: endpoint={endpoint} prn={prn} merchantCode={merchant_code}"
+    );
 
     let response = reqwest::Client::new()
         .post(&endpoint)
@@ -751,7 +795,10 @@ async fn verify_fonepay_third_party_qr(
         ApiError::from(format!("Failed to read Fonepay status response: {error}"))
     })?;
 
-    eprintln!("[Fonepay] report API response: HTTP {status} body={}", &body[..body.len().min(500)]);
+    eprintln!(
+        "[Fonepay] report API response: HTTP {status} body={}",
+        &body[..body.len().min(500)]
+    );
 
     if !status.is_success() {
         return Err(ApiError::from(format!("Fonepay returned {status}: {body}")));
@@ -779,9 +826,17 @@ pub fn get_nepalpay_settings() -> Result<NepalPaySettings, ApiError> {
 }
 
 #[tauri::command]
-pub fn save_nepalpay_settings(db: tauri::State<'_, crate::db::BusyDb>, settings: NepalPaySettings) -> Result<NepalPaySettings, ApiError> {
-    crate::db::write_nepalpay_settings(&settings).map_err(ApiError::from)?;
-    eprintln!("[NepalPay] save_settings: pos_credit_column={:?}", settings.pos_credit_column);
+pub fn save_nepalpay_settings(
+    db: tauri::State<'_, crate::db::BusyDb>,
+    settings: NepalPaySettings,
+    scope: Option<String>,
+) -> Result<NepalPaySettings, ApiError> {
+    let scope_kind = parse_scope(scope.as_deref());
+    crate::db::write_nepalpay_settings_scoped(&settings, &scope_kind).map_err(ApiError::from)?;
+    eprintln!(
+        "[NepalPay] save_settings: pos_credit_column={:?} scope={:?}",
+        settings.pos_credit_column, scope_kind
+    );
     if !settings.pos_credit_column.trim().is_empty() {
         db.set_pos_credit_column(settings.pos_credit_column.trim());
     }
@@ -859,21 +914,34 @@ pub async fn generate_nepalpay_dynamic_qr(
         "token": token
     });
 
-
-    eprintln!("[NepalPay] request payload: {}", serde_json::to_string_pretty(&payload).unwrap_or_default());
+    eprintln!(
+        "[NepalPay] request payload: {}",
+        serde_json::to_string_pretty(&payload).unwrap_or_default()
+    );
 
     // Basic Auth: base64(api_username:api_password)
     let basic_auth = base64_encode(
-        format!("{}:{}", settings.api_username.trim(), settings.api_password.trim()).as_bytes()
+        format!(
+            "{}:{}",
+            settings.api_username.trim(),
+            settings.api_password.trim()
+        )
+        .as_bytes(),
     );
 
-    eprintln!("[NepalPay] using Basic Auth username={}", settings.api_username.trim());
+    eprintln!(
+        "[NepalPay] using Basic Auth username={}",
+        settings.api_username.trim()
+    );
 
     let response = reqwest::Client::new()
         .post(&api_url)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .header(reqwest::header::ACCEPT, "application/json")
-        .header(reqwest::header::AUTHORIZATION, format!("Basic {basic_auth}"))
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Basic {basic_auth}"),
+        )
         .json(&payload)
         .send()
         .await
@@ -888,10 +956,15 @@ pub async fn generate_nepalpay_dynamic_qr(
         .await
         .map_err(|error| ApiError::from(format!("Failed to read Nepal Pay response: {error}")))?;
 
-    eprintln!("[NepalPay] response: HTTP {status} body={}", &body[..body.len().min(300)]);
+    eprintln!(
+        "[NepalPay] response: HTTP {status} body={}",
+        &body[..body.len().min(300)]
+    );
 
     if !status.is_success() {
-        return Err(ApiError::from(format!("Nepal Pay returned {status}: {body}")));
+        return Err(ApiError::from(format!(
+            "Nepal Pay returned {status}: {body}"
+        )));
     }
 
     let raw = serde_json::from_str::<serde_json::Value>(&body)
@@ -931,11 +1004,50 @@ pub async fn generate_nepalpay_dynamic_qr(
         ));
     }
 
+    if let Some(encoded_amount) = qr_string.as_deref().and_then(emv_transaction_amount) {
+        let requested_amount = amount.parse::<f64>().unwrap_or_default();
+        let qr_amount = encoded_amount.parse::<f64>().map_err(|_| {
+            ApiError::from("Nepal Pay returned a QR with an invalid transaction amount")
+        })?;
+
+        if (requested_amount - qr_amount).abs() > 0.005 {
+            return Err(ApiError::from(format!(
+                "Nepal Pay returned a stale QR amount ({encoded_amount}) instead of the requested amount ({amount})"
+            )));
+        }
+    }
+
     Ok(NepalPayQrResponse {
         qr_string,
         validation_trace_id,
         raw,
     })
+}
+
+fn emv_transaction_amount(qr_text: &str) -> Option<&str> {
+    let bytes = qr_text.as_bytes();
+    let mut offset = 0;
+
+    while offset + 4 <= bytes.len() {
+        let tag = std::str::from_utf8(&bytes[offset..offset + 2]).ok()?;
+        let length = std::str::from_utf8(&bytes[offset + 2..offset + 4])
+            .ok()?
+            .parse::<usize>()
+            .ok()?;
+        let value_start = offset + 4;
+        let value_end = value_start.checked_add(length)?;
+        if value_end > bytes.len() {
+            return None;
+        }
+
+        if tag == "54" {
+            return std::str::from_utf8(&bytes[value_start..value_end]).ok();
+        }
+
+        offset = value_end;
+    }
+
+    None
 }
 
 #[tauri::command]
@@ -966,17 +1078,28 @@ pub async fn check_nepalpay_payment_status(
         "acquirerId": settings.acquirer_id.trim(),
     });
 
-    eprintln!("[NepalPay] status request payload: {}", serde_json::to_string_pretty(&payload).unwrap_or_default());
+    eprintln!(
+        "[NepalPay] status request payload: {}",
+        serde_json::to_string_pretty(&payload).unwrap_or_default()
+    );
 
     let basic_auth = base64_encode(
-        format!("{}:{}", settings.api_username.trim(), settings.api_password.trim()).as_bytes()
+        format!(
+            "{}:{}",
+            settings.api_username.trim(),
+            settings.api_password.trim()
+        )
+        .as_bytes(),
     );
 
     let response = reqwest::Client::new()
         .post(settings.report_url.trim())
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .header(reqwest::header::ACCEPT, "application/json")
-        .header(reqwest::header::AUTHORIZATION, format!("Basic {basic_auth}"))
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Basic {basic_auth}"),
+        )
         .json(&payload)
         .send()
         .await
@@ -986,22 +1109,32 @@ pub async fn check_nepalpay_payment_status(
         })?;
 
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|error| ApiError::from(format!("Failed to read Nepal Pay status response: {error}")))?;
+    let body = response.text().await.map_err(|error| {
+        ApiError::from(format!("Failed to read Nepal Pay status response: {error}"))
+    })?;
 
-    eprintln!("[NepalPay] status response: HTTP {status} body={}", &body[..body.len().min(500)]);
+    eprintln!(
+        "[NepalPay] status response: HTTP {status} body={}",
+        &body[..body.len().min(500)]
+    );
 
     if !status.is_success() {
-        return Err(ApiError::from(format!("Nepal Pay report API returned {status}: {body}")));
+        return Err(ApiError::from(format!(
+            "Nepal Pay report API returned {status}: {body}"
+        )));
     }
 
     let raw = serde_json::from_str::<serde_json::Value>(&body)
         .unwrap_or_else(|_| serde_json::json!({ "response": body }));
 
-    let response_code = raw.get("responseCode").and_then(|v| v.as_str()).map(str::to_string);
-    let response_status = raw.get("responseStatus").and_then(|v| v.as_str()).map(str::to_string);
+    let response_code = raw
+        .get("responseCode")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let response_status = raw
+        .get("responseStatus")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
     // Some non-transaction responses (e.g. E012 "not initiated yet") put their
     // text in responseDescription instead of responseMessage — fall back to it
     // so the UI always has something to show instead of silently displaying nothing.
@@ -1025,6 +1158,145 @@ pub async fn check_nepalpay_payment_status(
     })
 }
 
+#[tauri::command]
+pub async fn record_nepalpay_session_number(
+    db: State<'_, BusyDb>,
+    request: NepalPaySessionRequest,
+) -> Result<NepalPaySessionResponse, ApiError> {
+    let settings = crate::db::read_nepalpay_settings().map_err(ApiError::from)?;
+    let session_report_url = if !settings.session_report_url.trim().is_empty() {
+        settings.session_report_url.trim()
+    } else if settings
+        .report_url
+        .to_ascii_lowercase()
+        .contains("merchanttxnreport")
+    {
+        // Compatibility with installations where the date-wise endpoint was
+        // previously entered in the only available Report URL field.
+        settings.report_url.trim()
+    } else {
+        ""
+    };
+    if session_report_url.is_empty() {
+        return Err(ApiError::from(
+            "NepalPay date-wise session report URL is not configured",
+        ));
+    }
+    if settings.session_number_column.trim().is_empty() {
+        return Err(ApiError::from(
+            "NepalPay session number Busy column is not configured",
+        ));
+    }
+
+    let transaction_date = request.transaction_date.trim();
+    let valid_date = transaction_date.len() == 10
+        && transaction_date.chars().enumerate().all(|(index, ch)| {
+            if index == 4 || index == 7 {
+                ch == '-'
+            } else {
+                ch.is_ascii_digit()
+            }
+        });
+    if !valid_date {
+        return Err(ApiError::from(
+            "NepalPay transaction date must use YYYY-MM-DD format",
+        ));
+    }
+
+    let payload = serde_json::json!({
+        "fromDate": transaction_date,
+        "toDate": transaction_date,
+        "merchantId": settings.merchant_id.trim(),
+        "acquirerId": settings.acquirer_id.trim(),
+    });
+    let basic_auth = base64_encode(
+        format!(
+            "{}:{}",
+            settings.api_username.trim(),
+            settings.api_password.trim()
+        )
+        .as_bytes(),
+    );
+    let response = reqwest::Client::new()
+        .post(session_report_url)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header(reqwest::header::ACCEPT, "application/json")
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Basic {basic_auth}"),
+        )
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|error| {
+            ApiError::from(format!(
+                "Failed to call NepalPay session report API: {error}"
+            ))
+        })?;
+    let status = response.status();
+    let body = response.text().await.map_err(|error| {
+        ApiError::from(format!(
+            "Failed to read NepalPay session report response: {error}"
+        ))
+    })?;
+    if !status.is_success() {
+        return Err(ApiError::from(format!(
+            "NepalPay session report returned {status}: {body}"
+        )));
+    }
+    let raw: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
+        ApiError::from(format!("Invalid NepalPay session report response: {error}"))
+    })?;
+    let invoice_no = request.invoice_no.trim();
+    let transaction_id = request.transaction_id.trim();
+    let rows = raw.get("responseBody").and_then(|value| value.as_array());
+    let matched = rows.and_then(|items| {
+        items.iter().find(|item| {
+            ["nQrTxnId", "instructionId", "validationTraceId"]
+                .iter()
+                .any(|field| value_matches(item.get(*field), transaction_id))
+                || ["merchantBillNo", "merchantTxnRef"]
+                    .iter()
+                    .any(|field| value_matches(item.get(*field), invoice_no))
+        })
+    });
+    let session_number = matched
+        .and_then(|item| item.get("sessionSrlNo"))
+        .and_then(|value| json_scalar_string(Some(value)))
+        .filter(|value| !value.trim().is_empty());
+
+    if let Some(ref session_number) = session_number {
+        db.save_invoice_session_number(
+            invoice_no,
+            session_number,
+            settings.session_number_column.trim(),
+        )
+        .map_err(ApiError::from)?;
+    }
+
+    Ok(NepalPaySessionResponse {
+        session_number,
+        matched_transaction: None,
+    })
+}
+
+fn value_matches(value: Option<&serde_json::Value>, expected: &str) -> bool {
+    if expected.is_empty() {
+        return false;
+    }
+    json_scalar_string(value)
+        .map(|value| value.trim().eq_ignore_ascii_case(expected))
+        .unwrap_or(false)
+}
+
+fn json_scalar_string(value: Option<&serde_json::Value>) -> Option<String> {
+    match value? {
+        serde_json::Value::String(value) => Some(value.clone()),
+        serde_json::Value::Number(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
 fn nepalpay_sign_token(token_string: &str, private_key_pem: &str) -> Result<String, ApiError> {
     // Accept both PKCS#8 (-----BEGIN PRIVATE KEY-----) and PKCS#1 (-----BEGIN RSA PRIVATE KEY-----)
     // openssl pkcs12 -in NPI.pfx -nocerts -nodes typically outputs PKCS#1
@@ -1038,6 +1310,68 @@ fn nepalpay_sign_token(token_string: &str, private_key_pem: &str) -> Result<Stri
     let signing_key = SigningKey::<Sha256>::new(private_key);
     let signature: rsa::pkcs1v15::Signature = signing_key.sign(token_string.as_bytes());
     Ok(base64_encode(signature.to_bytes().as_ref()))
+}
+
+/// Encrypts `plaintext` with an RSA public key using RSA/ECB/PKCS1Padding
+/// (i.e. raw PKCS#1 v1.5 encryption, single block — "ECB" just means no chaining mode),
+/// as required by the NCHL/NPI WebSocket api_token exchange.
+fn nepalpay_rsa_encrypt(plaintext: &str, public_key_input: &str) -> Result<String, ApiError> {
+    let public_key = parse_rsa_public_key(public_key_input)?;
+    let mut rng = rand::thread_rng();
+    let encrypted = public_key
+        .encrypt(&mut rng, Pkcs1v15Encrypt, plaintext.as_bytes())
+        .map_err(|e| ApiError::from(format!("RSA encryption failed: {e}")))?;
+    Ok(base64_encode(&encrypted))
+}
+
+/// Accepts a PEM-wrapped public key (X.509/SPKI "BEGIN PUBLIC KEY" or PKCS#1 "BEGIN RSA PUBLIC KEY"),
+/// or a bare base64 DER blob (as commonly handed out without PEM headers) and parses it as
+/// an X.509/SPKI RSA public key.
+fn parse_rsa_public_key(input: &str) -> Result<RsaPublicKey, ApiError> {
+    let trimmed = input.trim();
+    if trimmed.contains("BEGIN PUBLIC KEY") {
+        return RsaPublicKey::from_public_key_pem(trimmed)
+            .map_err(|e| ApiError::from(format!("Invalid X.509/PKCS#8 public key: {e}")));
+    }
+    if trimmed.contains("BEGIN RSA PUBLIC KEY") {
+        return RsaPublicKey::from_pkcs1_pem(trimmed)
+            .map_err(|e| ApiError::from(format!("Invalid PKCS#1 (RSA) public key: {e}")));
+    }
+
+    // Bare base64 DER (no PEM headers) — wrap it as X.509/SPKI PEM and parse.
+    let condensed: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
+    let wrapped = format!(
+        "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----",
+        condensed
+            .as_bytes()
+            .chunks(64)
+            .map(|chunk| std::str::from_utf8(chunk).unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    RsaPublicKey::from_public_key_pem(&wrapped).map_err(|e| {
+        ApiError::from(format!(
+            "Invalid public key (expected PEM or base64 DER SubjectPublicKeyInfo): {e}"
+        ))
+    })
+}
+
+#[tauri::command]
+pub fn nepalpay_encrypt_ws_token(
+    api_token: String,
+    public_key_pem: String,
+) -> Result<String, ApiError> {
+    if public_key_pem.trim().is_empty() {
+        return Err(ApiError::from(
+            "Nepal Pay WebSocket public key is not configured",
+        ));
+    }
+    let plaintext = api_token.trim();
+    eprintln!(
+        "[NepalPay] encrypting ws api_token: len={} bytes",
+        plaintext.len()
+    );
+    nepalpay_rsa_encrypt(plaintext, public_key_pem.trim())
 }
 
 #[tauri::command]
@@ -1054,8 +1388,18 @@ pub fn get_busy_settings(db: State<'_, BusyDb>) -> Result<BusySettingsState, Api
 pub fn save_busy_settings(
     db: State<'_, BusyDb>,
     settings: BusySettings,
+    scope: Option<String>,
 ) -> Result<BusySettingsState, ApiError> {
-    db.save_settings(settings).map_err(ApiError::from)
+    let scope_kind = parse_scope(scope.as_deref());
+    db.save_settings_scoped(settings, &scope_kind)
+        .map_err(ApiError::from)
+}
+
+fn parse_scope(scope: Option<&str>) -> SettingsScopeKind {
+    match scope {
+        Some("shared") => SettingsScopeKind::Shared,
+        _ => SettingsScopeKind::User,
+    }
 }
 
 #[tauri::command]

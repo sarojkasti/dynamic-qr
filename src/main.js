@@ -26,7 +26,11 @@ import {
   startBusyInvoiceWatcher,
   stopBusyInvoiceWatcher,
   verifyFonepayPaymentQr,
-  checkNepalPayPaymentStatus
+  checkNepalPayPaymentStatus,
+  recordNepalPaySessionNumber,
+  encryptNepalPayWsToken,
+  getSettingsScope,
+  saveSettingsScope
 } from "./api";
 import "./styles.css";
 
@@ -69,6 +73,7 @@ const state = {
   qrProviderAvailability: {},
   fonepaySettings: null,
   nepalPaySettings: null,
+  settingsScope: { fonepay: "user", nepalpay: "user", busy: "user" },
   notificationsEnabled: loadNotificationPreference(),
   qrProvider: loadQrProvider(),
   error: "",
@@ -129,17 +134,19 @@ async function boot() {
       return;
     }
 
-    const [summary, settingsState, launchInvoiceNo, watchLatest, fonepaySettings, nepalPaySettings] = await Promise.all([
+    const [summary, settingsState, launchInvoiceNo, watchLatest, fonepaySettings, nepalPaySettings, settingsScope] = await Promise.all([
       getConnectionSummary(),
       getBusySettings(),
       getLaunchInvoiceNo(),
       getLaunchWatchLatest(),
       getFonepaySettings().catch(() => null),
-      getNepalPaySettings().catch(() => null)
+      getNepalPaySettings().catch(() => null),
+      getSettingsScope().catch(() => null)
     ]);
 
     state.fonepaySettings = fonepaySettings;
     state.nepalPaySettings = nepalPaySettings;
+    if (settingsScope) state.settingsScope = settingsScope;
     state.connectionSummary = summary;
     state.busySettings = settingsState.settings;
     state.busySettingsConfigured = settingsState.isConfigured;
@@ -229,13 +236,24 @@ function getCachedQrPayloadForInvoice(invoice) {
   if (!key) return null;
 
   if (state.qrPayloads[key]) {
-    return state.qrPayloads[key];
+    if (qrPayloadMatchesInvoiceAmount(state.qrPayloads[key], invoice)) {
+      return state.qrPayloads[key];
+    }
+
+    removeQrPayloadForInvoice(invoice);
+    return null;
   }
 
   try {
     const persistedPayloads = loadQrPayloads();
     const persistedPayload = persistedPayloads[key];
     if (persistedPayload) {
+      if (!qrPayloadMatchesInvoiceAmount(persistedPayload, invoice)) {
+        delete persistedPayloads[key];
+        saveQrPayloads(persistedPayloads);
+        return null;
+      }
+
       state.qrPayloads[key] = persistedPayload;
       return persistedPayload;
     }
@@ -244,6 +262,20 @@ function getCachedQrPayloadForInvoice(invoice) {
   }
 
   return null;
+}
+
+function normalizedQrAmount(value) {
+  const amount = Number.parseFloat(String(value ?? "").trim());
+  return Number.isFinite(amount) ? amount.toFixed(2) : "";
+}
+
+function qrPayloadMatchesInvoiceAmount(payload, invoice) {
+  const currentAmount = normalizedQrAmount(invoice?.netAmount);
+  const payloadAmount = normalizedQrAmount(payload?.transactionAmount);
+
+  // Payloads saved by older app versions did not record their source amount.
+  // They cannot safely be reused because the invoice may have been edited.
+  return Boolean(currentAmount && payloadAmount && currentAmount === payloadAmount);
 }
 
 function invoiceSubtitle(invoice) {
@@ -499,7 +531,7 @@ async function handleBusySettingsSubmit(form) {
   saveNotificationPreference(state.notificationsEnabled);
 
   try {
-    const settingsState = await saveBusySettings(settings);
+    const settingsState = await saveBusySettings(settings, state.settingsScope?.busy ?? "user");
     state.busySettings = settingsState.settings;
     state.busySettingsConfigured = settingsState.isConfigured;
     state.busySettingsStoragePath = settingsState.storagePath;
@@ -523,12 +555,14 @@ async function handleBusySettingsSubmit(form) {
 
 async function openBusySettings() {
   state.showBusySettings = true;
-  const [fp, np] = await Promise.all([
+  const [fp, np, scope] = await Promise.all([
     getFonepaySettings().catch(() => null),
-    getNepalPaySettings().catch(() => null)
+    getNepalPaySettings().catch(() => null),
+    getSettingsScope().catch(() => null)
   ]);
   if (fp) state.fonepaySettings = fp;
   if (np) state.nepalPaySettings = np;
+  if (scope) state.settingsScope = scope;
   render();
 }
 
@@ -777,7 +811,7 @@ async function generateInvoiceQr(invoice, key) {
     return;
   }
 
-  if (getCachedQrPayload(targetKey)) {
+  if (getCachedQrPayloadForInvoice(invoice)) {
     delete state.qrLoadingKeys[targetKey];
     releaseQrGenerationLock(targetKey);
     render();
@@ -880,6 +914,7 @@ async function generateFonepayInvoiceQr(invoice) {
     imageDataUrl: response.imageDataUrl,
     remarks1: response.remarks1,
     raw: response.raw,
+    transactionAmount: normalizedQrAmount(invoice.netAmount),
     thirdpartyQrWebSocketUrl: response.raw?.thirdpartyQrWebSocketUrl ?? response.raw?.thirdPartyQrWebSocketUrl ?? null,
     provider: "fonepay"
   };
@@ -896,6 +931,7 @@ async function generateNepalPayInvoiceQr(invoice) {
     imageDataUrl: null,
     remarks1: invoice.invoiceNo,
     raw: response.raw,
+    transactionAmount: normalizedQrAmount(invoice.netAmount),
     validationTraceId: response.validationTraceId ?? null,
     provider: "nepalpay"
   };
@@ -1207,10 +1243,11 @@ async function handleCheckNepalPayStatus(invoice) {
       const txnId = String(txn.nQrTxnId ?? validationTraceId ?? "").trim();
       const updatedInvoice = await markInvoicePaid(invoice.invoiceNo, txnId || undefined, "nepalpay");
       if (updatedInvoice) {
+        const sessionNumber = await saveNepalPaySessionWithRetry(invoice.invoiceNo, txnId);
         state.invoices = state.invoices.map((item) =>
           invoiceKey(item) === invoiceKey(updatedInvoice) ? updatedInvoice : item
         );
-        state.successMessage = `NEPALPAY payment confirmed via status check. Invoice ${updatedInvoice.invoiceNo} marked as Paid.`;
+        state.successMessage = `NEPALPAY payment confirmed via status check. Invoice ${updatedInvoice.invoiceNo} marked as Paid.${sessionNumber ? ` Session ${sessionNumber} saved.` : " Session number is not available in the date-wise report yet."}`;
         removeQrPayloadForInvoice(invoice, "nepalpay");
         localStorage.setItem(
           PAYMENT_UPDATE_STORAGE_KEY,
@@ -1419,9 +1456,31 @@ function renderInvoiceDetails(invoice) {
   `;
 }
 
+function renderScopeToggle(settingsKey, currentScope) {
+  const isUser = currentScope !== "shared";
+  return `
+    <div class="scope-toggle" data-settings-key="${settingsKey}">
+      <span class="scope-toggle-label">Settings scope:</span>
+      <label class="scope-toggle-option ${isUser ? "active" : ""}">
+        <input type="radio" name="scope-${settingsKey}" value="user" ${isUser ? "checked" : ""} />
+        <span>This user only</span>
+      </label>
+      <label class="scope-toggle-option ${!isUser ? "active" : ""}">
+        <input type="radio" name="scope-${settingsKey}" value="shared" ${!isUser ? "checked" : ""} />
+        <span>All users (shared)</span>
+      </label>
+      <small class="scope-toggle-hint">${isUser
+        ? "Settings saved to your user profile — other Windows users keep their own settings."
+        : "Settings saved to the shared folder — all Windows users on this machine share them."
+      }</small>
+    </div>
+  `;
+}
+
 function renderFonepaySettingsPanel() {
   const s = state.fonepaySettings;
   const isConfigured = Boolean(s?.merchantCode);
+  const currentScope = state.settingsScope?.fonepay ?? "user";
 
   return `
     <div class="panel bank-panel">
@@ -1429,6 +1488,7 @@ function renderFonepaySettingsPanel() {
         <h3>Fonepay Settings</h3>
         <span class="${isConfigured ? "badge-ok" : "badge-empty"}">${isConfigured ? "Configured" : "Not set"}</span>
       </div>
+      ${renderScopeToggle("fonepay", currentScope)}
       <form id="fonepaySettingsForm" class="bank-form">
         <label>
           Merchant Code
@@ -1480,6 +1540,7 @@ function renderFonepaySettingsPanel() {
 function renderNepalPaySettingsPanel() {
   const s = state.nepalPaySettings;
   const isConfigured = Boolean(s?.merchantId);
+  const currentScope = state.settingsScope?.nepalpay ?? "user";
 
   return `
     <div class="panel bank-panel">
@@ -1487,6 +1548,7 @@ function renderNepalPaySettingsPanel() {
         <h3>NEPALPAY (NPI) Settings</h3>
         <span class="${isConfigured ? "badge-ok" : "badge-empty"}">${isConfigured ? "Configured" : "Not set"}</span>
       </div>
+      ${renderScopeToggle("nepalpay", currentScope)}
       <form id="nepalPaySettingsForm" class="bank-form">
         <label>
           API URL
@@ -1566,11 +1628,25 @@ function renderNepalPaySettingsPanel() {
             WS API Token (plain — encrypted on save)
             <input name="wsApiToken" type="password" placeholder="API token from NPI" value="${escapeHtml(s?.wsApiToken ?? "")}" />
           </label>
+          <label>
+            WS Public Key (PEM, from NCHL — used to RSA-encrypt the API token)
+            <textarea name="wsPublicKeyPem" rows="4" placeholder="-----BEGIN PUBLIC KEY-----...">${escapeHtml(s?.wsPublicKeyPem ?? "")}</textarea>
+          </label>
         </fieldset>
         <label>
           Report URL (transaction status API)
           <input name="reportUrl" type="url" placeholder="https://qr.npi.com.np/api/report/status" value="${escapeHtml(s?.reportUrl ?? "")}" />
           <small style="color:#64748b;font-size:0.8rem;">Used by the "Check Payment Status" button to look up a transaction by validationTraceId</small>
+        </label>
+        <label>
+          Date-wise Session Report URL
+          <input name="sessionReportUrl" type="url" placeholder="https://opennpi.connectips.com/nQR/v1/merchanttxnreport" value="${escapeHtml(s?.sessionReportUrl || (String(s?.reportUrl ?? "").toLowerCase().includes("merchanttxnreport") ? s.reportUrl : ""))}" />
+          <small style="color:#64748b;font-size:0.8rem;">Used after payment to obtain sessionSrlNo for that transaction</small>
+        </label>
+        <label>
+          Session Number Column
+          <input name="sessionNumberColumn" placeholder="OF3" value="${escapeHtml(s?.sessionNumberColumn ?? "")}" />
+          <small style="color:#64748b;font-size:0.8rem;">Column in the Busy payment-status table where the NepalPay session number will be saved</small>
         </label>
         <button type="submit">Save NEPALPAY Settings</button>
       </form>
@@ -1597,6 +1673,7 @@ function renderBusySettingsModal() {
 
       ${state.error ? `<div class="error-banner popup-error">${escapeHtml(state.error)}</div>` : ""}
 
+      ${renderScopeToggle("busy", state.settingsScope?.busy ?? "user")}
       <form id="busySettingsForm" class="bank-form">
         <label>
           ODBC connection
@@ -1734,6 +1811,36 @@ function bindEvents() {
     event.preventDefault();
     await handleNepalPaySettingsSubmit(event.currentTarget);
   });
+
+  // Scope toggle listeners
+  for (const key of ["fonepay", "nepalpay", "busy"]) {
+    document.querySelectorAll(`input[name="scope-${key}"]`).forEach((radio) => {
+      radio.addEventListener("change", async (event) => {
+        const newScope = event.target.value;
+        state.settingsScope = { ...state.settingsScope, [key]: newScope };
+        try {
+          await saveSettingsScope(state.settingsScope);
+          // Changing scope also changes which file is active. Reload it now so
+          // the form never keeps showing values from the previously selected
+          // user/shared file and accidentally saves them into the new scope.
+          if (key === "fonepay") {
+            state.fonepaySettings = await getFonepaySettings();
+          } else if (key === "nepalpay") {
+            state.nepalPaySettings = await getNepalPaySettings();
+          } else {
+            const settingsState = await getBusySettings();
+            state.busySettings = settingsState.settings;
+            state.busySettingsConfigured = settingsState.isConfigured;
+            state.busySettingsStoragePath = settingsState.storagePath;
+            state.connectionSummary = await getConnectionSummary();
+          }
+        } catch (e) {
+          state.error = `Could not change settings scope: ${errorMessage(e)}`;
+        }
+        render();
+      });
+    });
+  }
 }
 
 async function handleFonepaySettingsSubmit(form) {
@@ -1753,7 +1860,7 @@ async function handleFonepaySettingsSubmit(form) {
   };
 
   try {
-    const saved = await saveFonepaySettings(settings);
+    const saved = await saveFonepaySettings(settings, state.settingsScope?.fonepay ?? "user");
     state.fonepaySettings = saved;
 
     if (state.busySettingsConfigured && columnChanged && state.qrProvider === "fonepay") {
@@ -1792,11 +1899,14 @@ async function handleNepalPaySettingsSubmit(form) {
     wsUrl: form.wsUrl.value.trim(),
     wsUsername: form.wsUsername.value.trim(),
     wsApiToken: form.wsApiToken.value,
-    reportUrl: form.reportUrl.value.trim()
+    wsPublicKeyPem: form.wsPublicKeyPem.value.trim(),
+    reportUrl: form.reportUrl.value.trim(),
+    sessionReportUrl: form.sessionReportUrl.value.trim(),
+    sessionNumberColumn: form.sessionNumberColumn.value.trim()
   };
 
   try {
-    const saved = await saveNepalPaySettings(settings);
+    const saved = await saveNepalPaySettings(settings, state.settingsScope?.nepalpay ?? "user");
     state.nepalPaySettings = saved;
 
     if (state.busySettingsConfigured && columnChanged && state.qrProvider === "nepalpay") {
@@ -2067,17 +2177,28 @@ function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
         destination: "/user/nqrws/check-txn-status"
       }, "");
 
+      let encryptedApiToken = "";
+      try {
+        encryptedApiToken = await encryptNepalPayWsToken(
+          state.nepalPaySettings?.wsApiToken ?? "",
+          state.nepalPaySettings?.wsPublicKeyPem ?? ""
+        );
+      } catch (error) {
+        console.error("[NP-WS] Failed to RSA-encrypt api_token", error);
+        logPaymentStatus(`[NepalPay] websocket-token-encrypt-error invoice=${invoice.invoiceNo} error=${errorMessage(error)}`).catch(() => {});
+      }
+
       const body = JSON.stringify({
         merchant_id: "Terminal1",
         request_id: payload.validationTraceId,
         username: state.nepalPaySettings?.wsUsername ?? "",
-        api_token: state.nepalPaySettings?.wsApiToken ?? ""
+        api_token: encryptedApiToken
       });
       console.log("[NP-WS] SEND payload", {
         merchant_id: "Terminal1",
         request_id: payload.validationTraceId,
         username: state.nepalPaySettings?.wsUsername ? "(set)" : "(missing)",
-        api_token: state.nepalPaySettings?.wsApiToken ? "(set)" : "(missing)",
+        api_token: encryptedApiToken ? "(encrypted)" : "(missing)",
       });
       console.log("[NP-WS] SEND payload (raw body)", { invoiceNo: invoice.invoiceNo, body });
       logPaymentStatus(`[NepalPay] outbound-payload invoice=${invoice.invoiceNo} body=${body}`).catch(() => {});
@@ -2185,10 +2306,11 @@ function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
         await logPaymentStatus(successLog).catch(() => {});
         const updatedInvoice = await markInvoicePaid(invoice.invoiceNo, txnId || undefined, "nepalpay");
         if (updatedInvoice) {
+          const sessionNumber = await saveNepalPaySessionWithRetry(invoice.invoiceNo, txnId);
           state.invoices = state.invoices.map((item) =>
             invoiceKey(item) === invoiceKey(updatedInvoice) ? updatedInvoice : item
           );
-          state.successMessage = `NEPALPAY payment received. Invoice ${updatedInvoice.invoiceNo} marked as Paid.`;
+          state.successMessage = `NEPALPAY payment received. Invoice ${updatedInvoice.invoiceNo} marked as Paid.${sessionNumber ? ` Session ${sessionNumber} saved.` : " Session number is not available in the date-wise report yet."}`;
           state.error = "";
           rememberNepalPayValidationTraceId(invoice, payload?.validationTraceId);
           removeQrPayloadForInvoice(invoice, "nepalpay");
@@ -2257,8 +2379,8 @@ function _connectNepalPayStompSocket(invoice, payload, key, wsUrl, entry) {
 
   socket.onclose = (event) => {
     console.log("[NP-WS] WebSocket closed", { code: event.code, reason: event.reason, invoiceNo: invoice.invoiceNo });
-    console.log(`[Payment] [NepalPay] websocket-closed invoice=${invoice.invoiceNo} code=${event.code}`);
-    logPaymentStatus(`[NepalPay] websocket-closed invoice=${invoice.invoiceNo} code=${event.code}`).catch(() => {});
+    console.log(`[Payment] [NepalPay] websocket-closed invoice=${invoice.invoiceNo} code=${event.code} reason=${event.reason || "(none)"}`);
+    logPaymentStatus(`[NepalPay] websocket-closed invoice=${invoice.invoiceNo} code=${event.code} reason=${event.reason || "(none)"}`).catch(() => {});
     const current = nepalPayStompSockets.get(key);
     if (!current || current.handled) {
       if (current?.socket === socket) nepalPayStompSockets.delete(key);
@@ -2525,6 +2647,43 @@ function logFonepayTerminal(message) {
   logPaymentStatus(message).catch(() => {
     // Ignore terminal logging failures — console logging already covers this.
   });
+}
+
+function localIsoDate(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+async function saveNepalPaySessionWithRetry(invoiceNo, transactionId) {
+  const configuredSessionUrl = state.nepalPaySettings?.sessionReportUrl
+    || (String(state.nepalPaySettings?.reportUrl ?? "").toLowerCase().includes("merchanttxnreport")
+      ? state.nepalPaySettings.reportUrl
+      : "");
+  if (!configuredSessionUrl || !state.nepalPaySettings?.sessionNumberColumn) {
+    return null;
+  }
+
+  // The date-wise report can trail the WebSocket completion notification by
+  // a few seconds. Retry briefly before leaving the transaction paid without
+  // its session serial number.
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    if (attempt > 0) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1500));
+    }
+    try {
+      const result = await recordNepalPaySessionNumber(
+        invoiceNo,
+        transactionId ?? "",
+        localIsoDate()
+      );
+      if (result?.sessionNumber) return result.sessionNumber;
+    } catch (error) {
+      console.warn(`[NepalPay] Session lookup attempt ${attempt + 1} failed`, error);
+    }
+  }
+  return null;
 }
 
 function ensureFonepayPaymentSocket(invoice, payload) {

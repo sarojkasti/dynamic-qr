@@ -190,9 +190,57 @@ pub struct NepalPaySettings {
     pub ws_username: String,
     /// Plain api_token — stored encrypted, decrypted before use
     pub ws_api_token: String,
+    /// PEM-encoded RSA public key provided by NCHL/NPI, used to encrypt api_token
+    /// (RSA/ECB/PKCS1Padding) before it is sent in the WebSocket CONNECT payload.
+    #[serde(default)]
+    pub ws_public_key_pem: String,
     /// URL for the transaction-status report API (validationTraceId lookup)
     #[serde(default)]
     pub report_url: String,
+    /// Date-wise merchant transaction report API. Its response contains
+    /// `sessionSrlNo` for each NepalPay transaction.
+    #[serde(default)]
+    pub session_report_url: String,
+    /// Column in the configured Busy payment-status table where the NepalPay
+    /// session serial number is stored.
+    #[serde(default)]
+    pub session_number_column: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum SettingsScopeKind {
+    #[serde(rename = "user")]
+    User,
+    #[serde(rename = "shared")]
+    Shared,
+}
+
+impl Default for SettingsScopeKind {
+    fn default() -> Self {
+        Self::User
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsScope {
+    #[serde(default)]
+    pub fonepay: SettingsScopeKind,
+    #[serde(default)]
+    pub nepalpay: SettingsScopeKind,
+    #[serde(default)]
+    pub busy: SettingsScopeKind,
+}
+
+impl Default for SettingsScope {
+    fn default() -> Self {
+        Self {
+            fonepay: SettingsScopeKind::User,
+            nepalpay: SettingsScopeKind::User,
+            busy: SettingsScopeKind::User,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -224,4 +272,19 @@ pub struct NepalPayStatusResponse {
     pub response_message: Option<String>,
     pub transaction: Option<serde_json::Value>,
     pub raw: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NepalPaySessionRequest {
+    pub invoice_no: String,
+    pub transaction_id: String,
+    pub transaction_date: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NepalPaySessionResponse {
+    pub session_number: Option<String>,
+    pub matched_transaction: Option<serde_json::Value>,
 }
